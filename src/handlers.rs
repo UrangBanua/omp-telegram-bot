@@ -179,29 +179,166 @@ pub async fn command_handler(
         }
 
         Command::Compact => {
-            bot.send_message(chat_id, "🧹 <i>Memicu peringkasan memori sesi (compaction)...</i>")
+            let mut event_rx = client.subscribe();
+            let sent_msg = bot.send_message(chat_id, "🧹 <i>Memicu peringkasan memori sesi (compaction)...</i>")
                 .parse_mode(ParseMode::Html)
                 .await?;
+
             if let Err(e) = client.send_command(RpcCommand::Compact { id: None, custom_instructions: None }).await {
-                bot.send_message(chat_id, format!("❌ Gagal menjalankan compaction: {:#}", e)).await?;
+                let _ = bot.edit_message_text(chat_id, sent_msg.id, format!("❌ Gagal menjalankan compaction: {:#}", e)).await;
+                return Ok(());
             }
+
+            let bot_clone = bot.clone();
+            tokio::spawn(async move {
+                let timeout_dur = Duration::from_secs(15);
+                let start_time = tokio::time::Instant::now();
+                while start_time.elapsed() < timeout_dur {
+                    if let Ok(event) = event_rx.recv().await {
+                        if let RpcEvent::Response { command, success, error, .. } = event {
+                            if command.as_deref() == Some("compact") {
+                                if success {
+                                    let _ = bot_clone.edit_message_text(chat_id, sent_msg.id, "✅ <b>Compaction Berhasil!</b>\nMemori sesi telah diringkas untuk menghemat token.")
+                                        .parse_mode(ParseMode::Html)
+                                        .await;
+                                } else {
+                                    let err_msg = error.unwrap_or_else(|| "Gagal compaction".to_string());
+                                    let _ = bot_clone.edit_message_text(chat_id, sent_msg.id, format!("❌ <b>Compaction Gagal:</b> {}", escape_html(&err_msg)))
+                                        .parse_mode(ParseMode::Html)
+                                        .await;
+                                }
+                                return;
+                            }
+                        }
+                    }
+                }
+            });
         }
 
         Command::Status => {
+            let mut event_rx = client.subscribe();
+            let sent_msg = bot.send_message(chat_id, "📊 <i>Mengambil snapshot status dari OMP Core Engine...</i>")
+                .parse_mode(ParseMode::Html)
+                .await?;
+
             if let Err(e) = client.send_command(RpcCommand::GetState { id: None }).await {
-                bot.send_message(chat_id, format!("❌ Gagal mengambil status: {:#}", e)).await?;
-            } else {
-                bot.send_message(chat_id, "📊 <i>Meminta snapshot status dari OMP Core Engine...</i>")
-                    .parse_mode(ParseMode::Html)
-                    .await?;
+                let _ = bot.edit_message_text(chat_id, sent_msg.id, format!("❌ Gagal mengambil status: {:#}", e)).await;
+                return Ok(());
             }
+
+            let bot_clone = bot.clone();
+            let workspace_path = config.project_workspace.clone();
+            tokio::spawn(async move {
+                let timeout_dur = Duration::from_secs(5);
+                let start_time = tokio::time::Instant::now();
+                while start_time.elapsed() < timeout_dur {
+                    if let Ok(event) = event_rx.recv().await {
+                        if let RpcEvent::Response { command, success, data, error, .. } = event {
+                            if command.as_deref() == Some("get_state") {
+                                if success {
+                                    if let Some(d) = data {
+                                        let card = format_state_card(&d, &workspace_path);
+                                        let _ = bot_clone.edit_message_text(chat_id, sent_msg.id, card)
+                                            .parse_mode(ParseMode::Html)
+                                            .await;
+                                    }
+                                } else {
+                                    let err_msg = error.unwrap_or_else(|| "Gagal mendapatkan status".to_string());
+                                    let _ = bot_clone.edit_message_text(chat_id, sent_msg.id, format!("❌ Error: {}", escape_html(&err_msg)))
+                                        .parse_mode(ParseMode::Html)
+                                        .await;
+                                }
+                                return;
+                            }
+                        }
+                    }
+                }
+
+                let _ = bot_clone.edit_message_text(chat_id, sent_msg.id, "⏱️ <i>Waktu tunggu status habis (timeout). OMP sedang sibuk.</i>")
+                    .parse_mode(ParseMode::Html)
+                    .await;
+            });
         }
     }
 
     Ok(())
 }
 
-/// Handler untuk memproses pesan biasa (teks non-command dan upload foto).
+/// Format tampilan snapshot state OMP menjadi Telegram card yang rapi dan informatif.
+fn format_state_card(data: &serde_json::Value, workspace: &std::path::Path) -> String {
+    let provider = data.get("model")
+        .and_then(|m| m.get("provider"))
+        .and_then(|p| p.as_str())
+        .unwrap_or("unknown");
+    let model_id = data.get("model")
+        .and_then(|m| m.get("id"))
+        .and_then(|id| id.as_str())
+        .unwrap_or("unknown");
+
+    let thinking = data.get("thinkingLevel")
+        .and_then(|t| t.as_str())
+        .unwrap_or("off");
+
+    let is_streaming = data.get("isStreaming")
+        .and_then(|s| s.as_bool())
+        .unwrap_or(false);
+
+    let is_compacting = data.get("isCompacting")
+        .and_then(|c| c.as_bool())
+        .unwrap_or(false);
+
+    let message_count = data.get("messageCount")
+        .and_then(|m| m.as_u64())
+        .unwrap_or(0);
+
+    let session_name = data.get("sessionName")
+        .and_then(|s| s.as_str())
+        .unwrap_or("-");
+
+    let context_tokens = data.get("contextUsage")
+        .and_then(|u| u.get("tokens"))
+        .and_then(|t| t.as_u64());
+
+    let max_tokens = data.get("contextUsage")
+        .and_then(|u| u.get("maxTokens"))
+        .and_then(|m| m.as_u64());
+
+    let token_display = match (context_tokens, max_tokens) {
+        (Some(tok), Some(max)) => {
+            let pct = if max > 0 { (tok as f64 / max as f64) * 100.0 } else { 0.0 };
+            format!("{} / {} tokens ({:.2}%)", tok, max, pct)
+        }
+        (Some(tok), None) => format!("{} tokens", tok),
+        _ => "-".to_string(),
+    };
+
+    let status_str = if is_streaming {
+        "⚡ <b>Sedang Berpikir / Streaming</b>"
+    } else if is_compacting {
+        "🧹 <b>Sedang Compacting Memori</b>"
+    } else {
+        "🟢 <b>Idle (Siap)</b>"
+    };
+
+    format!(
+        "📊 <b>Status OMP Core Engine</b>\n\n\
+        • <b>Status:</b> {}\n\
+        • <b>Model Aktif:</b> <code>{}/{}</code>\n\
+        • <b>Thinking Level:</b> <code>{}</code>\n\
+        • <b>Sesi Aktif:</b> <code>{}</code> ({} pesan)\n\
+        • <b>Konsumsi Token:</b> {}\n\
+        • <b>Workspace:</b> <code>{}</code>",
+        status_str,
+        escape_html(provider),
+        escape_html(model_id),
+        escape_html(thinking),
+        escape_html(session_name),
+        message_count,
+        token_display,
+        escape_html(&workspace.to_string_lossy())
+    )
+}
+
 pub async fn message_handler(
     bot: Bot,
     msg: Message,
