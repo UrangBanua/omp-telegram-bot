@@ -2,7 +2,7 @@
 
 use crate::omp_client::OmpClient;
 use crate::types::{AppConfig, ImageContent, RpcCommand, RpcEvent};
-use crate::utils::{chunk_message, escape_html, format_tool_status};
+use crate::utils::{chunk_message, escape_html, format_tool_status, markdown_to_telegram_html};
 use base64::Engine;
 use log::{error, warn};
 use std::sync::Arc;
@@ -530,9 +530,14 @@ async fn execute_prompt_and_stream(
             update_message_safe(&bot, chat_id, message_id, first_chunk).await;
         }
 
-        // Kirim sisa chunk jika ada
+        // Kirim sisa chunk jika teks melebihi 4000 karakter
         for extra_chunk in chunks.iter().skip(1) {
-            let _ = bot.send_message(chat_id, extra_chunk.clone()).await;
+            let res = bot.send_message(chat_id, extra_chunk.clone())
+                .parse_mode(ParseMode::Html)
+                .await;
+            if res.is_err() {
+                let _ = bot.send_message(chat_id, extra_chunk.clone()).await;
+            }
         }
     } else {
         update_message_safe(&bot, chat_id, message_id, "✅ Selesai.").await;
@@ -541,30 +546,41 @@ async fn execute_prompt_and_stream(
     Ok(())
 }
 
-/// Format teks gabungan antara tool status dan teks stream.
+/// Format teks gabungan antara tool status dan teks stream yang dikonversi ke Telegram HTML.
 fn format_live_text(accumulated: &str, tool_status: &str, with_cursor: bool) -> String {
     let mut out = String::new();
     if !tool_status.is_empty() {
         out.push_str(tool_status);
         out.push_str("\n\n");
     }
-    out.push_str(accumulated);
+
+    if !accumulated.is_empty() {
+        let parsed_html = markdown_to_telegram_html(accumulated);
+        out.push_str(&parsed_html);
+    }
+
     if with_cursor {
-        out.push('▌');
+        out.push_str(" ▌");
     }
     out
 }
 
-/// Update pesan Telegram dengan penanganan fallback jika terjadi error parsing.
-async fn update_message_safe(bot: &Bot, chat_id: ChatId, message_id: MessageId, text: &str) {
-    if text.trim().is_empty() {
+/// Update pesan Telegram dengan HTML ParseMode dan safe fallback ke Plain Text jika parsing gagal.
+async fn update_message_safe(bot: &Bot, chat_id: ChatId, message_id: MessageId, html_text: &str) {
+    if html_text.trim().is_empty() {
         return;
     }
 
-    if let Err(e) = bot.edit_message_text(chat_id, message_id, text).await {
+    // Coba edit dengan format HTML terlebih dahulu
+    let res = bot.edit_message_text(chat_id, message_id, html_text)
+        .parse_mode(ParseMode::Html)
+        .await;
+
+    if let Err(e) = res {
         let err_str = e.to_string();
         if !err_str.contains("message is not modified") {
-            warn!("Gagal edit pesan stream: {}", err_str);
+            // Fallback ke Plain Text jika Telegram gagal mem-parse tag HTML
+            let _ = bot.edit_message_text(chat_id, message_id, html_text).await;
         }
     }
 }
