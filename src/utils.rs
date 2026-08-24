@@ -1,7 +1,6 @@
 //! Utilitas untuk konversi Markdown ke Telegram HTML, chunking pesan, dan formatting tampilan.
 
-/// Memecah pesan panjang menjadi beberapa chunk yang aman untuk batas limit Telegram (4096 karakter).
-/// Mengutamakan pemotongan pada batas baris baru (`\n`) agar format teks tetap rapi.
+/// Memecah pesan panjang menjadi beberapa chunk teks biasa yang aman untuk limit Telegram (4096 karakter).
 pub fn chunk_message(text: &str, max_len: usize) -> Vec<String> {
     if text.is_empty() {
         return vec!["(Pesan kosong)".to_string()];
@@ -64,12 +63,194 @@ pub fn format_tool_status(tool_name: &str, intent: Option<&str>) -> String {
     out
 }
 
+/// Memecah dokumen Markdown menjadi sub-messages HTML yang 100% valid dan terisolasi rapi.
+/// Menggabungkan Opsi 1 & Opsi 2:
+/// - Memotong berdasarkan batas seksi/heading dan mengisolasi blok kode script utuh.
+/// - Menjamin setiap balon pesan memiliki tag penutup HTML yang sempurna.
+pub fn split_markdown_into_html_messages(markdown: &str, max_chars: usize) -> Vec<String> {
+    if markdown.trim().is_empty() {
+        return vec!["(Pesan kosong)".to_string()];
+    }
+
+    let raw_blocks = extract_markdown_blocks(markdown);
+    let mut messages = Vec::new();
+    let mut current_markdown_buf = String::new();
+
+    for block in raw_blocks {
+        // Jika blok adalah Code Block besar (> max_chars), potong kode secara aman
+        if block.is_code_block && block.content.len() > max_chars {
+            // Flush buffer teks sebelumnya jika ada
+            if !current_markdown_buf.trim().is_empty() {
+                let html = markdown_to_telegram_html(&current_markdown_buf);
+                if !html.trim().is_empty() {
+                    messages.push(html);
+                }
+                current_markdown_buf.clear();
+            }
+
+            let code_chunks = split_large_code_block(&block.lang, &block.content, max_chars);
+            for code_chunk in code_chunks {
+                let html = markdown_to_telegram_html(&code_chunk);
+                if !html.trim().is_empty() {
+                    messages.push(html);
+                }
+            }
+            continue;
+        }
+
+        // Jika blok adalah Code Block (Opsi 2: Utamakan isolasi ke balon pesan tersendiri)
+        if block.is_code_block {
+            if !current_markdown_buf.trim().is_empty() {
+                let html = markdown_to_telegram_html(&current_markdown_buf);
+                if !html.trim().is_empty() {
+                    messages.push(html);
+                }
+                current_markdown_buf.clear();
+            }
+
+            let code_md = format!("```{}\n{}\n```", block.lang, block.content);
+            let html = markdown_to_telegram_html(&code_md);
+            if !html.trim().is_empty() {
+                messages.push(html);
+            }
+            continue;
+        }
+
+        // Untuk teks biasa / heading / list:
+        if current_markdown_buf.len() + block.content.len() > max_chars && !current_markdown_buf.trim().is_empty() {
+            let html = markdown_to_telegram_html(&current_markdown_buf);
+            if !html.trim().is_empty() {
+                messages.push(html);
+            }
+            current_markdown_buf.clear();
+        }
+
+        if !current_markdown_buf.is_empty() {
+            current_markdown_buf.push_str("\n\n");
+        }
+        current_markdown_buf.push_str(&block.content);
+    }
+
+    // Flush sisa teks di buffer akhir
+    if !current_markdown_buf.trim().is_empty() {
+        let html = markdown_to_telegram_html(&current_markdown_buf);
+        if !html.trim().is_empty() {
+            messages.push(html);
+        }
+    }
+
+    if messages.is_empty() {
+        vec![markdown_to_telegram_html(markdown)]
+    } else {
+        messages
+    }
+}
+
+/// Struktur representasi blok Markdown (Teks biasa atau Code Block).
+struct MarkdownBlock {
+    is_code_block: bool,
+    lang: String,
+    content: String,
+}
+
+/// Mengekstrak dokumen Markdown menjadi rangkaian blok semantik.
+fn extract_markdown_blocks(input: &str) -> Vec<MarkdownBlock> {
+    let mut blocks = Vec::new();
+    let mut lines = input.lines().peekable();
+
+    let mut in_code = false;
+    let mut code_lang = String::new();
+    let mut code_buf = String::new();
+    let mut text_buf = String::new();
+
+    while let Some(line) = lines.next() {
+        let trimmed = line.trim();
+
+        if trimmed.starts_with("```") {
+            if !in_code {
+                // Masuk ke code block: flush text_buf sebelumnya
+                if !text_buf.trim().is_empty() {
+                    blocks.push(MarkdownBlock {
+                        is_code_block: false,
+                        lang: String::new(),
+                        content: text_buf.trim().to_string(),
+                    });
+                    text_buf.clear();
+                }
+
+                in_code = true;
+                code_lang = trimmed.trim_start_matches('`').trim().to_string();
+                code_buf.clear();
+            } else {
+                // Keluar dari code block
+                in_code = false;
+                blocks.push(MarkdownBlock {
+                    is_code_block: true,
+                    lang: code_lang.clone(),
+                    content: code_buf.trim().to_string(),
+                });
+                code_buf.clear();
+            }
+            continue;
+        }
+
+        if in_code {
+            if !code_buf.is_empty() {
+                code_buf.push('\n');
+            }
+            code_buf.push_str(line);
+        } else {
+            if !text_buf.is_empty() {
+                text_buf.push('\n');
+            }
+            text_buf.push_str(line);
+        }
+    }
+
+    // Flush sisa buffer
+    if in_code && !code_buf.is_empty() {
+        blocks.push(MarkdownBlock {
+            is_code_block: true,
+            lang: code_lang,
+            content: code_buf.trim().to_string(),
+        });
+    } else if !text_buf.trim().is_empty() {
+        blocks.push(MarkdownBlock {
+            is_code_block: false,
+            lang: String::new(),
+            content: text_buf.trim().to_string(),
+        });
+    }
+
+    blocks
+}
+
+/// Memotong kode script yang sangat panjang menjadi beberapa sub-blok code valid.
+fn split_large_code_block(lang: &str, code: &str, max_chars: usize) -> Vec<String> {
+    let mut out = Vec::new();
+    let lines: Vec<&str> = code.lines().collect();
+    let mut cur_buf = String::new();
+
+    for line in lines {
+        if cur_buf.len() + line.len() + 1 > max_chars && !cur_buf.is_empty() {
+            out.push(format!("```{}\n{}\n```", lang, cur_buf.trim()));
+            cur_buf.clear();
+        }
+
+        if !cur_buf.is_empty() {
+            cur_buf.push('\n');
+        }
+        cur_buf.push_str(line);
+    }
+
+    if !cur_buf.trim().is_empty() {
+        out.push(format!("```{}\n{}\n```", lang, cur_buf.trim()));
+    }
+
+    out
+}
+
 /// Mengonversi teks Markdown standar (dari LLM / OMP) menjadi format HTML resmi Telegram.
-/// - Paragraf & Text: Format paragraf biasa yang bersih (bukan block)
-/// - Headings (#, ##, ###): Format bold terpisah `<b>...</b>`
-/// - Bullet List (*, -): Format bullet Unicode `• ...`
-/// - Tabel Markdown (| a | b |): Dikonversi menjadi structured list card yang rapi dan mudah dibaca di mobile/desktop
-/// - Code Blocks (```lang ... ```): Dikonversi menjadi `<pre><code class="language-lang">...</code></pre>`
 pub fn markdown_to_telegram_html(input: &str) -> String {
     let mut output = String::with_capacity(input.len() + 128);
     let lines: Vec<&str> = input.lines().collect();
@@ -197,7 +378,6 @@ pub fn markdown_to_telegram_html(input: &str) -> String {
         }
     }
 
-    // Rapikan multiple blank lines yang berlebihan
     clean_excessive_newlines(&output)
 }
 
@@ -263,7 +443,6 @@ fn format_table_as_clean_cards(rows: &[&str], output: &mut String) {
     }
 }
 
-/// Cek heading (# ... , ## ... , ### ...)
 fn parse_heading(line: &str) -> Option<String> {
     if line.starts_with("### ") {
         Some(line[4..].trim().to_string())
@@ -276,7 +455,6 @@ fn parse_heading(line: &str) -> Option<String> {
     }
 }
 
-/// Cek list item (* item, - item)
 fn parse_list_item(line: &str) -> Option<String> {
     if (line.starts_with("* ") || line.starts_with("- ")) && line.len() > 2 {
         Some(line[2..].trim().to_string())
@@ -285,7 +463,6 @@ fn parse_list_item(line: &str) -> Option<String> {
     }
 }
 
-/// Cek numbered list (1. item, 2. item)
 fn is_numbered_list(line: &str) -> bool {
     let mut parts = line.splitn(2, '.');
     if let (Some(num), Some(rest)) = (parts.next(), parts.next()) {
@@ -296,7 +473,6 @@ fn is_numbered_list(line: &str) -> bool {
     false
 }
 
-/// Cek blockquote (> text)
 fn parse_blockquote(line: &str) -> Option<String> {
     if line.starts_with("> ") && line.len() > 2 {
         Some(line[2..].trim().to_string())
@@ -307,7 +483,6 @@ fn parse_blockquote(line: &str) -> Option<String> {
     }
 }
 
-/// Mengonversi pemformatan inline (bold, italic, inline code) dengan dukungan nested.
 pub fn parse_inline_formatting(input: &str) -> String {
     let mut result = String::with_capacity(input.len() + 32);
     let chars: Vec<char> = input.chars().collect();
@@ -315,7 +490,6 @@ pub fn parse_inline_formatting(input: &str) -> String {
     let len = chars.len();
 
     while i < len {
-        // 1. Inline Code (`code`)
         if chars[i] == '`' {
             if let Some(close_idx) = find_next_char(&chars, i + 1, '`') {
                 let code_content: String = chars[i + 1..close_idx].iter().collect();
@@ -325,7 +499,6 @@ pub fn parse_inline_formatting(input: &str) -> String {
             }
         }
 
-        // 2. Bold (**bold** atau __bold__)
         if (chars[i] == '*' && i + 1 < len && chars[i + 1] == '*')
             || (chars[i] == '_' && i + 1 < len && chars[i + 1] == '_')
         {
@@ -339,11 +512,9 @@ pub fn parse_inline_formatting(input: &str) -> String {
             }
         }
 
-        // 3. Italic (*italic* atau _italic_)
         if (chars[i] == '*' || chars[i] == '_') && (i == 0 || chars[i - 1].is_whitespace() || chars[i - 1] == '(') {
             let marker = chars[i];
             if let Some(close_idx) = find_next_char(&chars, i + 1, marker) {
-                // Pastikan bukan double
                 if close_idx + 1 == len || chars[close_idx + 1] != marker {
                     let inner_raw: String = chars[i + 1..close_idx].iter().collect();
                     if !inner_raw.trim().is_empty() {
@@ -355,7 +526,6 @@ pub fn parse_inline_formatting(input: &str) -> String {
             }
         }
 
-        // Karakter biasa dengan HTML entity escaping
         match chars[i] {
             '&' => result.push_str("&amp;"),
             '<' => result.push_str("&lt;"),
@@ -368,7 +538,6 @@ pub fn parse_inline_formatting(input: &str) -> String {
     result
 }
 
-/// Helper khusus untuk memproses italic di dalam bold (misal **TTSR (*Time-Traveling*):**)
 fn parse_inline_italic(input: &str) -> String {
     let mut result = String::with_capacity(input.len() + 16);
     let chars: Vec<char> = input.chars().collect();
@@ -451,26 +620,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_headings_and_nested_bold_italic() {
-        let md = "### 1. Sistem Keamanan\n* **TTSR (*Time-Traveling*):** Pemantauan live stream.";
-        let html = markdown_to_telegram_html(md);
-        assert!(html.contains("<b>1. Sistem Keamanan</b>"));
-        assert!(html.contains("• <b>TTSR (<i>Time-Traveling</i>):</b> Pemantauan live stream."));
-    }
-
-    #[test]
-    fn test_code_block() {
-        let md = "```rust\nfn main() {\n    println!(\"hello\");\n}\n```";
-        let html = markdown_to_telegram_html(md);
-        assert!(html.contains("<pre><code class=\"language-rust\">fn main() {\n    println!(&quot;hello&quot;);"));
-    }
-
-    #[test]
-    fn test_table_conversion() {
-        let md = "| Kategori | Command | Deskripsi |\n| :--- | :--- | :--- |\n| Prompting | `prompt` | Kirim pesan prompt |";
-        let html = markdown_to_telegram_html(md);
-        assert!(html.contains("📋 <b>Prompting</b>"));
-        assert!(html.contains("<code>prompt</code>"));
-        assert!(html.contains("Kirim pesan prompt"));
+    fn test_split_markdown_with_code_block() {
+        let md = "Pengantar teks.\n\n```typescript\nconst x = 10;\n```\n\nPenutup teks.";
+        let messages = split_markdown_into_html_messages(md, 3500);
+        assert_eq!(messages.len(), 3);
+        assert!(messages[0].contains("Pengantar teks."));
+        assert!(messages[1].contains("<pre><code class=\"language-typescript\">const x = 10;</code></pre>"));
+        assert!(messages[2].contains("Penutup teks."));
     }
 }

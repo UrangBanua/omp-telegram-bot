@@ -2,7 +2,7 @@
 
 use crate::omp_client::OmpClient;
 use crate::types::{AppConfig, ImageContent, RpcCommand, RpcEvent};
-use crate::utils::{chunk_message, escape_html, format_tool_status, markdown_to_telegram_html};
+use crate::utils::{chunk_message, escape_html, format_tool_status, markdown_to_telegram_html, split_markdown_into_html_messages};
 use base64::Engine;
 use log::{debug, error, warn};
 use std::sync::Arc;
@@ -529,21 +529,21 @@ async fn execute_prompt_and_stream(
     // Matikan background typing indicator
     let _ = typing_stop_tx.send(());
 
-    // Finalisasi pesan (hapus kursor animasi)
-    let final_display = format_live_text(&accumulated_text, "", false);
-    if !final_display.trim().is_empty() {
-        let chunks = chunk_message(&final_display, 4000);
-        if let Some(first_chunk) = chunks.first() {
-            update_message_safe(&bot, chat_id, message_id, first_chunk).await;
+    // Finalisasi pesan: gunakan smart Markdown section & code-block isolator (Kombinasi Opsi 1 & 2)
+    if !accumulated_text.trim().is_empty() {
+        let sub_messages = split_markdown_into_html_messages(&accumulated_text, 3500);
+        if let Some(first_msg) = sub_messages.first() {
+            update_message_safe(&bot, chat_id, message_id, first_msg).await;
         }
 
-        // Kirim sisa chunk jika teks melebihi 4000 karakter
-        for extra_chunk in chunks.iter().skip(1) {
-            let res = bot.send_message(chat_id, extra_chunk.clone())
+        // Kirim sub-messages berikutnya (blok kode terisolasi / seksi lanjutan)
+        for extra_msg in sub_messages.iter().skip(1) {
+            let res = bot.send_message(chat_id, extra_msg.clone())
                 .parse_mode(ParseMode::Html)
                 .await;
-            if res.is_err() {
-                let _ = bot.send_message(chat_id, extra_chunk.clone()).await;
+            if let Err(e) = res {
+                warn!("Gagal mengirim sub-message HTML, mencoba fallback plain text: {:#}", e);
+                let _ = bot.send_message(chat_id, extra_msg.clone()).await;
             }
         }
     } else {
