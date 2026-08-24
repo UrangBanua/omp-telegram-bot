@@ -766,4 +766,44 @@ mod tests {
         assert!(messages[1].contains("<pre><code class=\"language-typescript\">const x = 10;</code></pre>"));
         assert!(messages[2].contains("Penutup teks."));
     }
+
+    #[test]
+    fn test_headings_and_nested_bold_italic() {
+        let md = "### 1. Keamanan\n* **TTSR (*Time-Traveling*):** Pemantauan live stream.";
+        let html = markdown_to_telegram_html(md);
+        assert!(html.contains("<b>1. Keamanan</b>"));
+        assert!(html.contains("• <b>TTSR (<i>Time-Traveling</i>):</b>"));
+    }
+
+    #[test]
+    fn test_table_card_formatting() {
+        let md = "| Kategori | Command | Deskripsi |\n| :--- | :--- | :--- |\n| Prompting | `prompt` | Mengirim pesan prompt |";
+        let html = markdown_to_telegram_html(md);
+        assert!(html.contains("📋 <b>Prompting</b>"));
+        assert!(html.contains("<code>prompt</code>"));
+        assert!(html.contains("Mengirim pesan prompt"));
+    }
+
+    #[test]
+    fn test_tool_status_formatting() {
+        let status = format_tool_status("bash", Some("cargo check"));
+        assert!(status.contains("<blockquote>⚡ <b>Eksekusi Tool:</b> <code>bash</code>"));
+        assert!(status.contains("<i>cargo check</i>"));
+        assert!(status.contains("</blockquote>"));
+    }
+
+    #[test]
+    fn test_escape_html() {
+        let raw = "<script>alert('x & y');</script>";
+        let escaped = escape_html(raw);
+        assert_eq!(escaped, "&lt;script&gt;alert('x &amp; y');&lt;/script&gt;");
+    }
+
+    #[test]
+    fn test_chunk_message_short() {
+        let text = "Halo dunia";
+        let chunks = chunk_message(text, 100);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0], "Halo dunia");
+    }
 }

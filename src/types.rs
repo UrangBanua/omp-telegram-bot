@@ -226,3 +226,35 @@ impl RpcEvent {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_rpc_command_serialization() {
+        let cmd = RpcCommand::Prompt {
+            id: Some("req_1".to_string()),
+            message: "Halo OMP".to_string(),
+            images: None,
+        };
+        let json = serde_json::to_string(&cmd).unwrap();
+        assert!(json.contains("\"type\":\"prompt\""));
+        assert!(json.contains("\"message\":\"Halo OMP\""));
+        assert_eq!(cmd.type_name(), "prompt");
+    }
+
+    #[test]
+    fn test_rpc_event_deserialization() {
+        let raw_json = r#"{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"Halo"}}"#;
+        let event: RpcEvent = serde_json::from_str(raw_json).unwrap();
+        assert_eq!(event.type_name(), "message_update");
+        if let RpcEvent::MessageUpdate { assistant_message_event } = event {
+            let ev = assistant_message_event.unwrap();
+            assert_eq!(ev.event_type, "text_delta");
+            assert_eq!(ev.delta.as_deref(), Some("Halo"));
+        } else {
+            panic!("Expected MessageUpdate event");
+        }
+    }
+}
