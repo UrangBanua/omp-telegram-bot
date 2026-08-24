@@ -300,7 +300,7 @@ pub fn markdown_to_telegram_html(input: &str) -> String {
             continue;
         }
 
-        // 2. Penanganan Tabel Markdown (| col1 | col2 |) -> Render Real Grid Table
+        // 2. Penanganan Tabel Markdown (| col1 | col2 |) -> Solusi 3: Structured Modern Card Tree
         if trimmed.starts_with('|') && trimmed.ends_with('|') {
             let mut table_rows = Vec::new();
             while i < total_lines {
@@ -312,7 +312,7 @@ pub fn markdown_to_telegram_html(input: &str) -> String {
                     break;
                 }
             }
-            format_table_as_grid(&table_rows, &mut output);
+            format_table_as_structured_cards(&table_rows, &mut output);
             continue;
         }
 
@@ -381,116 +381,84 @@ pub fn markdown_to_telegram_html(input: &str) -> String {
     clean_excessive_newlines(&output)
 }
 
-/// Mengonversi tabel Markdown menjadi format tabel grid visual sejati menggunakan Unicode box-drawing dan <pre>.
-fn format_table_as_grid(rows: &[&str], output: &mut String) {
+/// Mengonversi tabel Markdown menjadi format kartu terstruktur modern dengan hierarki cabang (Solusi 3).
+/// - Kolom pertama menjadi judul kartu `• <b>...</b>`
+/// - Kolom-kolom berikutnya ditata sebagai sub-properti dengan penanda `├─` dan `└─`.
+fn format_table_as_structured_cards(rows: &[&str], output: &mut String) {
     if rows.is_empty() {
         return;
     }
 
-    let mut table_matrix: Vec<Vec<String>> = Vec::new();
+    let mut headers: Vec<String> = Vec::new();
+    let mut data_rows: Vec<Vec<String>> = Vec::new();
 
     for (idx, row) in rows.iter().enumerate() {
         let cells: Vec<String> = row
             .trim_matches('|')
             .split('|')
-            .map(|c| strip_markdown_formatting(c.trim()))
+            .map(|c| c.trim().to_string())
             .collect();
 
-        // Lewati baris separator |--|--|
-        if idx == 1 && cells.iter().all(|c| c.contains("---") || c.is_empty()) {
+        // Baris 1: Header
+        if idx == 0 {
+            headers = cells.into_iter().map(|h| clean_header_label(&h)).collect();
+            continue;
+        }
+
+        // Baris 2: Separator |--|--|
+        if cells.iter().all(|c| c.contains("---") || c.is_empty()) {
             continue;
         }
 
         if !cells.is_empty() && cells.iter().any(|c| !c.is_empty()) {
-            table_matrix.push(cells);
+            data_rows.push(cells);
         }
     }
 
-    if table_matrix.is_empty() {
+    if data_rows.is_empty() {
         return;
     }
 
-    // Hitung jumlah kolom maksimal
-    let num_cols = table_matrix.iter().map(|r| r.len()).max().unwrap_or(0);
-    if num_cols == 0 {
-        return;
-    }
-
-    // Normalisasi panjang setiap baris agar sama dengan num_cols
-    for row in &mut table_matrix {
-        while row.len() < num_cols {
-            row.push(String::new());
+    output.push('\n');
+    for row in data_rows {
+        if row.is_empty() {
+            continue;
         }
-    }
 
-    // Hitung lebar maksimal untuk masing-masing kolom
-    let mut col_widths = vec![0; num_cols];
-    for row in &table_matrix {
-        for (c, val) in row.iter().enumerate() {
-            col_widths[c] = col_widths[c].max(val.chars().count());
-        }
-    }
+        let main_title = parse_inline_formatting(&row[0]);
+        if row.len() == 2 {
+            // Tabel 2 kolom (Key-Value sederhana)
+            let val = parse_inline_formatting(&row[1]);
+            output.push_str(&format!("• <b>{}</b>: {}\n", main_title, val));
+        } else {
+            // Tabel multi-kolom (Format Pohon/Hierarki Modern)
+            output.push_str(&format!("• <b>{}</b>\n", main_title));
+            let sub_cols: Vec<(usize, &String)> = row.iter().enumerate().skip(1).filter(|(_, v)| !v.is_empty()).collect();
+            let total_sub = sub_cols.len();
 
-    // Pastikan lebar minimal tiap kolom adalah 3 karakter
-    for width in &mut col_widths {
-        *width = (*width).max(3);
-    }
+            for (i, (col_idx, val)) in sub_cols.into_iter().enumerate() {
+                let is_last = i + 1 == total_sub;
+                let branch = if is_last { "└─" } else { "├─" };
+                let header_label = headers.get(col_idx).cloned().unwrap_or_default();
+                let parsed_val = parse_inline_formatting(val);
 
-    output.push_str("\n<pre>\n");
-
-    // 1. Top border: ┌───┬───┐
-    output.push('┌');
-    for (c, &w) in col_widths.iter().enumerate() {
-        output.push_str(&"─".repeat(w + 2));
-        if c + 1 < num_cols {
-            output.push('┬');
-        }
-    }
-    output.push_str("┐\n");
-
-    // 2. Baris data & header
-    for (r_idx, row) in table_matrix.iter().enumerate() {
-        output.push('│');
-        for (c_idx, val) in row.iter().enumerate() {
-            let width = col_widths[c_idx];
-            let char_count = val.chars().count();
-            let pad_spaces = width.saturating_sub(char_count);
-            output.push_str(&format!(" {}{} ", escape_html(val), " ".repeat(pad_spaces)));
-            output.push('│');
-        }
-        output.push('\n');
-
-        // Separator setelah header (baris index 0): ├───┼───┤
-        if r_idx == 0 && table_matrix.len() > 1 {
-            output.push('├');
-            for (c, &w) in col_widths.iter().enumerate() {
-                output.push_str(&"─".repeat(w + 2));
-                if c + 1 < num_cols {
-                    output.push('┼');
+                if !header_label.is_empty() {
+                    output.push_str(&format!("  {} <i>{}:</i> {}\n", branch, escape_html(&header_label), parsed_val));
+                } else {
+                    output.push_str(&format!("  {} {}\n", branch, parsed_val));
                 }
             }
-            output.push_str("┤\n");
+            output.push('\n');
         }
     }
-
-    // 3. Bottom border: └───┴───┘
-    output.push('└');
-    for (c, &w) in col_widths.iter().enumerate() {
-        output.push_str(&"─".repeat(w + 2));
-        if c + 1 < num_cols {
-            output.push('┴');
-        }
-    }
-    output.push_str("┘\n</pre>\n\n");
 }
 
-/// Helper untuk membersihkan simbol markdown dari teks tabel agar penghitungan lebar kolom akurat.
-fn strip_markdown_formatting(input: &str) -> String {
-    input
+/// Helper untuk membersihkan label header tabel.
+fn clean_header_label(header: &str) -> String {
+    header
         .replace("**", "")
         .replace("__", "")
         .replace('`', "")
-        .replace("~~", "")
         .trim()
         .to_string()
 }
@@ -828,14 +796,12 @@ mod tests {
     }
 
     #[test]
-    fn test_table_grid_formatting() {
-        let md = "| Kategori | Command | Deskripsi |\n| :--- | :--- | :--- |\n| Prompting | `prompt` | Mengirim pesan prompt |";
+    fn test_table_structured_cards_formatting() {
+        let md = "| Aspek | Yang Dicek | Masalah Umum |\n| :--- | :--- | :--- |\n| YAML Syntax | Indentasi konsisten | Tab vs spaces |";
         let html = markdown_to_telegram_html(md);
-        assert!(html.contains("<pre>"));
-        assert!(html.contains("┌"));
-        assert!(html.contains("│ Kategori"));
-        assert!(html.contains("│ prompt"));
-        assert!(html.contains("└"));
+        assert!(html.contains("• <b>YAML Syntax</b>"));
+        assert!(html.contains("├─ <i>Yang Dicek:</i> Indentasi konsisten"));
+        assert!(html.contains("└─ <i>Masalah Umum:</i> Tab vs spaces"));
     }
 
     #[test]
