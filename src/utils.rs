@@ -615,6 +615,129 @@ fn clean_excessive_newlines(input: &str) -> String {
     out.trim().to_string()
 }
 
+/// Representasi item sesi untuk picker /resume Telegram.
+#[derive(Debug, Clone)]
+pub struct SessionItem {
+    pub id_prefix: String,
+    pub title: String,
+    pub file_path: String,
+    pub timestamp_str: String,
+}
+
+/// Membaca daftar file sesi .jsonl dari ~/.omp/agent/sessions/ yang sesuai dengan workspace.
+pub fn list_workspace_sessions(workspace: &std::path::Path) -> Vec<SessionItem> {
+    let mut results = Vec::new();
+    let home = match std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")) {
+        Ok(h) => h,
+        Err(_) => return results,
+    };
+
+    let sessions_base = std::path::PathBuf::from(home).join(".omp").join("agent").join("sessions");
+    if !sessions_base.exists() {
+        return results;
+    }
+
+    let canonical = workspace.canonicalize().unwrap_or_else(|_| workspace.to_path_buf());
+    let canonical_str = canonical.to_string_lossy();
+    let clean_ws = canonical_str.replace([':', '\\', '/', '_'], "-");
+
+    // Cari direktori session yang cocok
+    let mut target_dir = None;
+    if let Ok(entries) = std::fs::read_dir(&sessions_base) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                let dirname = path.file_name().unwrap_or_default().to_string_lossy();
+                if dirname.contains(&clean_ws) || clean_ws.contains(&dirname.replace("--", "")) {
+                    target_dir = Some(path);
+                    break;
+                }
+            }
+        }
+    }
+
+    let target_dir = match target_dir {
+        Some(d) => d,
+        None => return results,
+    };
+
+    // Baca seluruh file .jsonl
+    let mut files = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&target_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file() && path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
+                if let Ok(metadata) = entry.metadata() {
+                    let modified = metadata.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+                    files.push((path, modified));
+                }
+            }
+        }
+    }
+
+    // Urutkan dari yang paling baru diubah (newest first)
+    files.sort_by(|a, b| b.1.cmp(&a.1));
+
+    // Ambil maksimal 6 sesi terbaru untuk Telegram keyboard
+    for (path, _) in files.into_iter().take(6) {
+        let file_path_str = path.to_string_lossy().to_string();
+        let mut title = String::new();
+        let mut id_prefix = String::new();
+        let mut timestamp_str = String::new();
+
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            for line in content.lines().take(6) {
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(line) {
+                    if let Some(t) = json.get("title").and_then(|t| t.as_str()) {
+                        if !t.trim().is_empty() && title.is_empty() {
+                            title = t.trim().to_string();
+                         }
+                    }
+                    if let Some(id) = json.get("id").and_then(|i| i.as_str()) {
+                        if id_prefix.is_empty() && id.len() >= 8 {
+                            id_prefix = id[..8].to_string();
+                        }
+                    }
+                    if let Some(ts) = json.get("timestamp").and_then(|t| t.as_str()) {
+                        if timestamp_str.is_empty() && ts.len() >= 10 {
+                            timestamp_str = ts[..10].to_string();
+                        }
+                    }
+                    if title.is_empty() {
+                        if let Some(msg_text) = json.get("message")
+                            .and_then(|m| m.get("content"))
+                            .and_then(|c| c.as_array())
+                            .and_then(|arr| arr.first())
+                            .and_then(|item| item.get("text"))
+                            .and_then(|t| t.as_str())
+                        {
+                            if !msg_text.trim().is_empty() {
+                                title = msg_text.chars().take(35).collect();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if title.is_empty() {
+            title = "Sesi Koding".to_string();
+        }
+        if id_prefix.is_empty() {
+            id_prefix = path.file_stem().unwrap_or_default().to_string_lossy().chars().take(8).collect();
+        }
+
+        results.push(SessionItem {
+            id_prefix,
+            title,
+            file_path: file_path_str,
+            timestamp_str,
+        });
+    }
+
+    results
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

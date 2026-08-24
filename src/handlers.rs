@@ -2,7 +2,7 @@
 
 use crate::omp_client::OmpClient;
 use crate::types::{AppConfig, ImageContent, RpcCommand, RpcEvent};
-use crate::utils::{chunk_message, escape_html, format_tool_status, markdown_to_telegram_html, split_markdown_into_html_messages};
+use crate::utils::{chunk_message, escape_html, format_tool_status, list_workspace_sessions, markdown_to_telegram_html, split_markdown_into_html_messages};
 use base64::Engine;
 use log::{debug, error, warn};
 use std::sync::Arc;
@@ -33,6 +33,8 @@ pub enum Command {
     Compact,
     #[command(description = "Memeriksa status OMP, model aktif, dan konsumsi token")]
     Status,
+    #[command(description = "Melihat daftar riwayat sesi dan berpindah ke sesi lain")]
+    Resume,
 }
 
 /// Helper untuk memeriksa apakah user yang mengirim pesan berada dalam whitelist.
@@ -259,6 +261,41 @@ pub async fn command_handler(
                     .await;
             });
         }
+
+        Command::Resume => {
+            let sessions = list_workspace_sessions(&config.project_workspace);
+            if sessions.is_empty() {
+                bot.send_message(chat_id, "📂 <i>Tidak ditemukan riwayat sesi tersimpan di workspace ini.</i>")
+                    .parse_mode(ParseMode::Html)
+                    .await?;
+                return Ok(());
+            }
+
+            let mut text = String::from("📂 <b>Pilih Sesi untuk Dilanjutkan (Resume):</b>\n\n");
+            let mut keyboard_rows = Vec::new();
+
+            for (idx, item) in sessions.iter().enumerate() {
+                text.push_str(&format!(
+                    "{}. <b>{}</b>\n   <code>{}</code> • <i>{}</i>\n\n",
+                    idx + 1,
+                    escape_html(&item.title),
+                    escape_html(&item.id_prefix),
+                    escape_html(&item.timestamp_str)
+                ));
+
+                let button_label = format!("{}. {}", idx + 1, item.title.chars().take(22).collect::<String>());
+                keyboard_rows.push(vec![InlineKeyboardButton::callback(
+                    button_label,
+                    format!("resume_idx:{}", idx),
+                )]);
+            }
+
+            let keyboard = InlineKeyboardMarkup::new(keyboard_rows);
+            bot.send_message(chat_id, text)
+                .reply_markup(keyboard)
+                .parse_mode(ParseMode::Html)
+                .await?;
+        }
     }
 
     Ok(())
@@ -303,6 +340,37 @@ pub async fn callback_handler(
                     )
                     .parse_mode(ParseMode::Html)
                     .await?;
+                }
+                other if other.starts_with("resume_idx:") => {
+                    let idx_str = &other["resume_idx:".len()..];
+                    if let Ok(idx) = idx_str.parse::<usize>() {
+                        let sessions = list_workspace_sessions(&config.project_workspace);
+                        if let Some(target_session) = sessions.get(idx) {
+                            bot.answer_callback_query(q.id.clone()).text(format!("Beralih ke sesi: {}", target_session.title)).await?;
+                            
+                            if let Err(e) = client.send_command(RpcCommand::SwitchSession {
+                                id: None,
+                                session_path: target_session.file_path.clone(),
+                            }).await {
+                                bot.edit_message_text(msg.chat().id, msg.id(), format!("❌ Gagal berpindah sesi: {:#}", e)).await?;
+                            } else {
+                                let switched_msg = format!(
+                                    "✅ <b>Berhasil Berpindah Sesi!</b>\n\n\
+                                    📄 <b>Sesi Aktif:</b> <code>{}</code> (<code>{}</code>)\n\
+                                    📁 <b>Workspace:</b> <code>{}</code>\n\n\
+                                    <i>Kirim pesan untuk melanjutkan percakapan pada sesi ini.</i>",
+                                    escape_html(&target_session.title),
+                                    escape_html(&target_session.id_prefix),
+                                    escape_html(&config.project_workspace.to_string_lossy())
+                                );
+                                bot.edit_message_text(msg.chat().id, msg.id(), switched_msg)
+                                    .parse_mode(ParseMode::Html)
+                                    .await?;
+                            }
+                        } else {
+                            bot.answer_callback_query(q.id.clone()).text("Sesi tidak ditemukan").await?;
+                        }
+                    }
                 }
                 _ => {}
             }

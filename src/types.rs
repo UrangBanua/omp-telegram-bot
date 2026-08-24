@@ -128,6 +128,14 @@ pub enum RpcCommand {
         #[serde(skip_serializing_if = "Option::is_none")]
         id: Option<String>,
     },
+
+    #[serde(rename = "switch_session")]
+    SwitchSession {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
+        #[serde(rename = "sessionPath")]
+        session_path: String,
+    },
 }
 
 impl RpcCommand {
@@ -142,6 +150,7 @@ impl RpcCommand {
             RpcCommand::SetThinkingLevel { .. } => "set_thinking_level",
             RpcCommand::Compact { .. } => "compact",
             RpcCommand::GetState { .. } => "get_state",
+            RpcCommand::SwitchSession { .. } => "switch_session",
         }
     }
 }
