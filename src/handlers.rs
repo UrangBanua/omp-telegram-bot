@@ -35,6 +35,8 @@ pub enum Command {
     Status,
     #[command(description = "Melihat daftar riwayat sesi dan berpindah ke sesi lain")]
     Resume,
+    #[command(description = "Mengubah nama/judul sesi aktif saat ini (/rename <judul>)")]
+    Rename(String),
 }
 
 /// Helper untuk memeriksa apakah user yang mengirim pesan berada dalam whitelist.
@@ -299,6 +301,79 @@ pub async fn command_handler(
                 let keyboard = InlineKeyboardMarkup::new(keyboard_rows);
                 let _ = bot_clone.send_message(chat_id, text)
                     .reply_markup(keyboard)
+                    .parse_mode(ParseMode::Html)
+                    .await;
+            });
+        }
+
+        Command::Rename(new_name) => {
+            let trimmed_name = new_name.trim();
+            if trimmed_name.is_empty() {
+                bot.send_message(
+                    chat_id,
+                    "⚠️ <b>Format Salah</b>\nBerikan nama baru untuk sesi ini:\nContoh: <code>/rename fitur-gateway-telegram</code>",
+                )
+                .parse_mode(ParseMode::Html)
+                .await?;
+                return Ok(());
+            }
+
+            let name_to_set = trimmed_name.to_string();
+            let bot_clone = bot.clone();
+            let client_clone = client.clone();
+            let mut event_rx = client.subscribe();
+
+            tokio::spawn(async move {
+                let sent_msg = bot_clone.send_message(chat_id, "⏳ <i>Mengubah nama sesi di OMP...</i>")
+                    .parse_mode(ParseMode::Html)
+                    .await;
+
+                let message_id = match sent_msg {
+                    Ok(m) => m.id,
+                    Err(_) => return,
+                };
+
+                if let Err(e) = client_clone.send_command(RpcCommand::SetSessionName {
+                    id: None,
+                    name: name_to_set.clone(),
+                }).await {
+                    let _ = bot_clone.edit_message_text(chat_id, message_id, format!("❌ Gagal mengubah nama sesi: {:#}", e)).await;
+                    return;
+                }
+
+                let timeout_dur = Duration::from_secs(5);
+                let start_time = tokio::time::Instant::now();
+                while start_time.elapsed() < timeout_dur {
+                    if let Ok(event) = event_rx.recv().await {
+                        if let RpcEvent::Response { command, success, error, .. } = event {
+                            if command.as_deref() == Some("set_session_name") {
+                                if success {
+                                    let success_msg = format!(
+                                        "✅ <b>Nama Sesi Berhasil Diubah!</b>\n\n\
+                                        📄 <b>Nama Sesi Baru:</b> <code>{}</code>\n\
+                                        <i>Perubahan ini otomatis tersimpan di riwayat sesi disk.</i>",
+                                        escape_html(&name_to_set)
+                                    );
+                                    let _ = bot_clone.edit_message_text(chat_id, message_id, success_msg)
+                                        .parse_mode(ParseMode::Html)
+                                        .await;
+                                } else {
+                                    let err_msg = error.unwrap_or_else(|| "Gagal mengubah nama sesi".to_string());
+                                    let _ = bot_clone.edit_message_text(chat_id, message_id, format!("❌ Error: {}", escape_html(&err_msg)))
+                                        .parse_mode(ParseMode::Html)
+                                        .await;
+                                }
+                                return;
+                            }
+                        }
+                    }
+                }
+
+                let fallback_msg = format!(
+                    "✅ <b>Nama Sesi Diperbarui ke:</b> <code>{}</code>",
+                    escape_html(&name_to_set)
+                );
+                let _ = bot_clone.edit_message_text(chat_id, message_id, fallback_msg)
                     .parse_mode(ParseMode::Html)
                     .await;
             });

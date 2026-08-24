@@ -44,6 +44,7 @@
 | **`/start`** | Menampilkan status koneksi OMP, workspace aktif, dan panduan menu. |
 | **`/new`** | Menampilkan tombol konfirmasi interaktif untuk membuat sesi baru (mengarsipkan sesi lama). |
 | **`/resume`** | Memindai riwayat sesi lokal di disk dan menampilkan menu tombol untuk beralih sesi. |
+| **`/rename <nama>`** | Mengubah nama/judul sesi aktif saat ini di riwayat disk. |
 | **`/status`** | Mengambil snapshot status *real-time* (model aktif, level thinking, konsumsi token, pesan). |
 | **`/abort`** | Menghentikan paksa aksi/proses koding AI seketika (*Emergency Stop*). |
 | **`/steer <pesan>`** | Menyisipkan arahan/koreksi di tengah-tengah proses agen yang sedang berjalan. |

@@ -136,6 +136,13 @@ pub enum RpcCommand {
         #[serde(rename = "sessionPath")]
         session_path: String,
     },
+
+    #[serde(rename = "set_session_name")]
+    SetSessionName {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
+        name: String,
+    },
 }
 
 impl RpcCommand {
@@ -151,6 +158,7 @@ impl RpcCommand {
             RpcCommand::Compact { .. } => "compact",
             RpcCommand::GetState { .. } => "get_state",
             RpcCommand::SwitchSession { .. } => "switch_session",
+            RpcCommand::SetSessionName { .. } => "set_session_name",
         }
     }
 }
