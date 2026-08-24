@@ -29,7 +29,7 @@ Seluruh implementasi kode pada proyek ini harus mematuhi standar rekayasa perang
 - **Idiomatic Error Handling:** Gunakan `anyhow::Result` untuk level application/entry-point dan `thiserror` jika membuat custom domain error. Jangan menggunakan `unwrap()` atau `expect()` pada runtime path produksi.
 - **Telegram Rate-Limiting & Flood Control:** Implementasikan *debounced buffer* (throttling ~1.0–1.5 detik) saat melakukan edit pesan teks hasil streaming dari OMP agar tidak terkena HTTP 429 Flood Control dari Telegram API.
 - **Smart Markdown Chunker:** Telegram memiliki batas 4096 karakter per pesan. Gunakan `split_markdown_into_html_messages` yang memotong berdasarkan batas seksi/blok kode sehingga seluruh tag HTML (`<pre>`, `<code>`, `<b>`, `<i>`) selalu tertutup sempurna dan valid 100%.
-- **Perataan Format Teks Telegram:** Format paragraf teks biasa, heading bold `<b>`, data tabel terstruktur (`📋`), dan blok `<pre><code>` terisolasi hanya untuk script/kode & tool execution blockquote.
+- **Perataan Format Teks Telegram:** Format paragraf teks biasa, heading bold `<b>`, tabel grid sejati monospace (`<pre>┌───┬───┐`), dan blok `<pre><code>` terisolasi hanya untuk script/kode & tool execution blockquote.
 - **Keamanan Debug Logging:** Log level `debug!` hanya boleh mencatat nama tipe command/event struktural (`type_name`) dan DILARANG mencetak raw JSON/text input rahasia (API key, password).
 - **Modular Design:**
   - `src/main.rs`: Dedicated 8MB runner, inisialisasi runtime, konfigurasi, logger, notifikasi lifecycle, dan dispatcher Teloxide.

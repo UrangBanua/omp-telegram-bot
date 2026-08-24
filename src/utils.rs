@@ -300,7 +300,7 @@ pub fn markdown_to_telegram_html(input: &str) -> String {
             continue;
         }
 
-        // 2. Penanganan Tabel Markdown (| col1 | col2 |)
+        // 2. Penanganan Tabel Markdown (| col1 | col2 |) -> Render Real Grid Table
         if trimmed.starts_with('|') && trimmed.ends_with('|') {
             let mut table_rows = Vec::new();
             while i < total_lines {
@@ -312,7 +312,7 @@ pub fn markdown_to_telegram_html(input: &str) -> String {
                     break;
                 }
             }
-            format_table_as_clean_cards(&table_rows, &mut output);
+            format_table_as_grid(&table_rows, &mut output);
             continue;
         }
 
@@ -381,66 +381,118 @@ pub fn markdown_to_telegram_html(input: &str) -> String {
     clean_excessive_newlines(&output)
 }
 
-/// Mengonversi tabel Markdown menjadi format card terstruktur yang sangat rapi dan enak dibaca di Telegram.
-fn format_table_as_clean_cards(rows: &[&str], output: &mut String) {
+/// Mengonversi tabel Markdown menjadi format tabel grid visual sejati menggunakan Unicode box-drawing dan <pre>.
+fn format_table_as_grid(rows: &[&str], output: &mut String) {
     if rows.is_empty() {
         return;
     }
 
-    let mut headers: Vec<String> = Vec::new();
-    let mut data_rows: Vec<Vec<String>> = Vec::new();
+    let mut table_matrix: Vec<Vec<String>> = Vec::new();
 
     for (idx, row) in rows.iter().enumerate() {
         let cells: Vec<String> = row
             .trim_matches('|')
             .split('|')
-            .map(|c| c.trim().to_string())
+            .map(|c| strip_markdown_formatting(c.trim()))
             .collect();
 
-        // Baris 1: Header
-        if idx == 0 {
-            headers = cells;
+        // Lewati baris separator |--|--|
+        if idx == 1 && cells.iter().all(|c| c.contains("---") || c.is_empty()) {
             continue;
         }
 
-        // Baris 2: Separator |--|--|
-        if cells.iter().all(|c| c.contains("---") || c.is_empty()) {
-            continue;
+        if !cells.is_empty() && cells.iter().any(|c| !c.is_empty()) {
+            table_matrix.push(cells);
         }
-
-        // Baris Data
-        data_rows.push(cells);
     }
 
-    if data_rows.is_empty() {
+    if table_matrix.is_empty() {
         return;
     }
 
-    output.push('\n');
-    for row in data_rows {
-        output.push_str("📋 ");
-        for (col_idx, val) in row.iter().enumerate() {
-            if val.is_empty() {
-                continue;
-            }
+    // Hitung jumlah kolom maksimal
+    let num_cols = table_matrix.iter().map(|r| r.len()).max().unwrap_or(0);
+    if num_cols == 0 {
+        return;
+    }
 
-            let header_label = headers.get(col_idx).cloned().unwrap_or_default();
-            let parsed_val = parse_inline_formatting(val);
+    // Normalisasi panjang setiap baris agar sama dengan num_cols
+    for row in &mut table_matrix {
+        while row.len() < num_cols {
+            row.push(String::new());
+        }
+    }
 
-            if col_idx == 0 {
-                output.push_str(&format!("<b>{}</b>", parsed_val));
-            } else if col_idx == 1 && row.len() > 1 && !header_label.is_empty() {
-                output.push_str(&format!(" (<code>{}</code>)", parsed_val));
-            } else {
-                if !header_label.is_empty() {
-                    output.push_str(&format!("\n   • <i>{}:</i> {}", escape_html(&header_label), parsed_val));
-                } else {
-                    output.push_str(&format!("\n   • {}", parsed_val));
+    // Hitung lebar maksimal untuk masing-masing kolom
+    let mut col_widths = vec![0; num_cols];
+    for row in &table_matrix {
+        for (c, val) in row.iter().enumerate() {
+            col_widths[c] = col_widths[c].max(val.chars().count());
+        }
+    }
+
+    // Pastikan lebar minimal tiap kolom adalah 3 karakter
+    for width in &mut col_widths {
+        *width = (*width).max(3);
+    }
+
+    output.push_str("\n<pre>\n");
+
+    // 1. Top border: ┌───┬───┐
+    output.push('┌');
+    for (c, &w) in col_widths.iter().enumerate() {
+        output.push_str(&"─".repeat(w + 2));
+        if c + 1 < num_cols {
+            output.push('┬');
+        }
+    }
+    output.push_str("┐\n");
+
+    // 2. Baris data & header
+    for (r_idx, row) in table_matrix.iter().enumerate() {
+        output.push('│');
+        for (c_idx, val) in row.iter().enumerate() {
+            let width = col_widths[c_idx];
+            let char_count = val.chars().count();
+            let pad_spaces = width.saturating_sub(char_count);
+            output.push_str(&format!(" {}{} ", escape_html(val), " ".repeat(pad_spaces)));
+            output.push('│');
+        }
+        output.push('\n');
+
+        // Separator setelah header (baris index 0): ├───┼───┤
+        if r_idx == 0 && table_matrix.len() > 1 {
+            output.push('├');
+            for (c, &w) in col_widths.iter().enumerate() {
+                output.push_str(&"─".repeat(w + 2));
+                if c + 1 < num_cols {
+                    output.push('┼');
                 }
             }
+            output.push_str("┤\n");
         }
-        output.push_str("\n\n");
     }
+
+    // 3. Bottom border: └───┴───┘
+    output.push('└');
+    for (c, &w) in col_widths.iter().enumerate() {
+        output.push_str(&"─".repeat(w + 2));
+        if c + 1 < num_cols {
+            output.push('┴');
+        }
+    }
+    output.push_str("┘\n</pre>\n\n");
+}
+
+/// Helper untuk membersihkan simbol markdown dari teks tabel agar penghitungan lebar kolom akurat.
+fn strip_markdown_formatting(input: &str) -> String {
+    input
+        .replace("**", "")
+        .replace("__", "")
+        .replace('`', "")
+        .replace("~~", "")
+        .trim()
+        .to_string()
 }
 
 fn parse_heading(line: &str) -> Option<String> {
@@ -776,12 +828,14 @@ mod tests {
     }
 
     #[test]
-    fn test_table_card_formatting() {
+    fn test_table_grid_formatting() {
         let md = "| Kategori | Command | Deskripsi |\n| :--- | :--- | :--- |\n| Prompting | `prompt` | Mengirim pesan prompt |";
         let html = markdown_to_telegram_html(md);
-        assert!(html.contains("📋 <b>Prompting</b>"));
-        assert!(html.contains("<code>prompt</code>"));
-        assert!(html.contains("Mengirim pesan prompt"));
+        assert!(html.contains("<pre>"));
+        assert!(html.contains("┌"));
+        assert!(html.contains("│ Kategori"));
+        assert!(html.contains("│ prompt"));
+        assert!(html.contains("└"));
     }
 
     #[test]
