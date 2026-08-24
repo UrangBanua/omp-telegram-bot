@@ -17,15 +17,23 @@ use teloxide::utils::command::BotCommands;
 use types::{AppConfig, RpcCommand, RpcEvent};
 use utils::escape_html;
 fn main() -> anyhow::Result<()> {
-    // Buat multi-threaded Tokio runtime dengan stack size 4 MB per thread (mencegah stack overflow di Windows)
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .thread_stack_size(4 * 1024 * 1024)
-        .build()?;
+    // Jalankan seluruh runtime dan dispatcher pada thread dengan stack size 8 MB (kebal stack overflow limit 1 MB OS Windows)
+    let builder = std::thread::Builder::new()
+        .name("omp-bot-runner".into())
+        .stack_size(8 * 1024 * 1024);
 
-    runtime.block_on(async_main())
+    let handler = builder.spawn(|| {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .thread_stack_size(8 * 1024 * 1024)
+            .build()
+            .expect("Gagal membuat multi-thread Tokio runtime");
+
+        runtime.block_on(async_main())
+    })?;
+
+    handler.join().map_err(|_| anyhow::anyhow!("Thread runner mengalami error"))?
 }
-
 async fn async_main() -> anyhow::Result<()> {
     if std::env::var("RUST_LOG").is_err() {
         std::env::set_var("RUST_LOG", "info");
