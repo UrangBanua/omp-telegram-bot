@@ -426,11 +426,12 @@ async fn execute_prompt_and_stream(
         return Ok(());
     }
 
-    // Kirim balon pesan awal untuk di-update selama streaming
-    let sent_msg = bot.send_message(chat_id, "▌").await?;
+    // Kirim balon pesan awal dengan status informatif
+    let sent_msg = bot.send_message(chat_id, "⏳ <i>Menghubungi OMP Core Engine...</i>")
+        .parse_mode(ParseMode::Html)
+        .await?;
     let message_id = sent_msg.id;
     debug!("Balon pesan awal dibuat dengan message_id: {}", message_id);
-
     // Jalankan background typing indicator loop
     let typing_bot = bot.clone();
     let (typing_stop_tx, mut typing_stop_rx) = tokio::sync::oneshot::channel::<()>();
@@ -552,9 +553,10 @@ async fn execute_prompt_and_stream(
     Ok(())
 }
 
-/// Format teks gabungan antara tool status dan teks stream yang dikonversi ke Telegram HTML.
-fn format_live_text(accumulated: &str, tool_status: &str, with_cursor: bool) -> String {
+/// Format teks gabungan antara teks stream dan status dinamis footer selama proses berjalan.
+fn format_live_text(accumulated: &str, tool_status: &str, is_streaming: bool) -> String {
     let mut out = String::new();
+
     if !tool_status.is_empty() {
         out.push_str(tool_status);
         out.push_str("\n\n");
@@ -565,12 +567,17 @@ fn format_live_text(accumulated: &str, tool_status: &str, with_cursor: bool) -> 
         out.push_str(&parsed_html);
     }
 
-    if with_cursor {
-        out.push_str(" ▌");
+    // Footer dinamis hanya ditampilkan selama streaming aktif (Opsi A)
+    if is_streaming {
+        if out.is_empty() {
+            out.push_str("⏳ <i>Sedang menganalisis instruksi...</i>");
+        } else if tool_status.is_empty() {
+            out.push_str("\n\n⏳ <i>Sedang menulis respons...</i>");
+        }
     }
+
     out
 }
-
 /// Update pesan Telegram dengan HTML ParseMode dan safe fallback ke Plain Text jika parsing gagal.
 async fn update_message_safe(bot: &Bot, chat_id: ChatId, message_id: MessageId, html_text: &str) {
     if html_text.trim().is_empty() {
