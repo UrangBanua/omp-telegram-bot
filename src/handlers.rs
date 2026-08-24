@@ -315,62 +315,60 @@ pub async fn callback_handler(
     client: OmpClient,
     config: Arc<AppConfig>,
 ) -> ResponseResult<()> {
-    let user_id = q.from.id.0;
-    if !config.allowed_user_ids.is_empty() && !config.allowed_user_ids.contains(&user_id) {
-        bot.answer_callback_query(q.id).text("⛔ Akses ditolak").await?;
-        return Ok(());
-    }
+    tokio::spawn(async move {
+        let user_id = q.from.id.0;
+        if !config.allowed_user_ids.is_empty() && !config.allowed_user_ids.contains(&user_id) {
+            let _ = bot.answer_callback_query(q.id).text("⛔ Akses ditolak").await;
+            return;
+        }
 
-    if let Some(data) = q.data {
-        if let Some(msg) = q.message {
-            match data.as_str() {
-                "confirm_new_session" => {
-                    bot.answer_callback_query(q.id).text("Membuat sesi baru...").await?;
-                    if let Err(e) = client.send_command(RpcCommand::NewSession { id: None, parent_session: None }).await {
-                        bot.edit_message_text(msg.chat().id, msg.id(), format!("❌ Gagal memulai sesi baru: {:#}", e)).await?;
-                    } else {
-                        bot.edit_message_text(
+        if let Some(data) = q.data {
+            if let Some(msg) = q.message {
+                match data.as_str() {
+                    "confirm_new_session" => {
+                        let _ = bot.answer_callback_query(q.id).text("Membuat sesi baru...").await;
+                        if let Err(e) = client.send_command(RpcCommand::NewSession { id: None, parent_session: None }).await {
+                            let _ = bot.edit_message_text(msg.chat().id, msg.id(), format!("❌ Gagal memulai sesi baru: {:#}", e)).await;
+                        } else {
+                            let _ = bot.edit_message_text(
+                                msg.chat().id,
+                                msg.id(),
+                                "✨ <b>Sesi koding baru telah dimulai!</b>\nSesi lama telah diarsipkan dan OMP siap dengan sesi bersih.",
+                            )
+                            .parse_mode(ParseMode::Html)
+                            .await;
+                        }
+                    }
+                    "cancel_new_session" => {
+                        let _ = bot.answer_callback_query(q.id).text("Dibatalkan").await;
+                        let _ = bot.edit_message_text(
                             msg.chat().id,
                             msg.id(),
-                            "✨ <b>Sesi koding baru telah dimulai!</b>\nSesi lama telah diarsipkan dan OMP siap dengan sesi bersih.",
+                            "❌ <b>Pembuatan sesi baru dibatalkan.</b>\nSesi aktif saat ini tetap dilanjutkan.",
                         )
                         .parse_mode(ParseMode::Html)
-                        .await?;
+                        .await;
                     }
-                }
-                "cancel_new_session" => {
-                    bot.answer_callback_query(q.id).text("Dibatalkan").await?;
-                    bot.edit_message_text(
-                        msg.chat().id,
-                        msg.id(),
-                        "❌ <b>Pembuatan sesi baru dibatalkan.</b>\nSesi aktif saat ini tetap dilanjutkan.",
-                    )
-                    .parse_mode(ParseMode::Html)
-                    .await?;
-                }
-                other if other.starts_with("resume_idx:") => {
-                    let idx_str = other["resume_idx:".len()..].to_string();
-                    let workspace = config.project_workspace.clone();
-                    let bot_clone = bot.clone();
-                    let client_clone = client.clone();
-                    let chat_id = msg.chat().id;
-                    let message_id = msg.id();
-                    let query_id = q.id.clone();
+                    other if other.starts_with("resume_idx:") => {
+                        let idx_str = other["resume_idx:".len()..].to_string();
+                        let workspace = config.project_workspace.clone();
+                        let chat_id = msg.chat().id;
+                        let message_id = msg.id();
+                        let query_id = q.id.clone();
 
-                    tokio::spawn(async move {
                         if let Ok(idx) = idx_str.parse::<usize>() {
                             let sessions = tokio::task::spawn_blocking(move || {
                                 list_workspace_sessions(&workspace)
                             }).await.unwrap_or_default();
 
                             if let Some(target_session) = sessions.get(idx) {
-                                let _ = bot_clone.answer_callback_query(query_id).text(format!("Beralih ke: {}", target_session.title)).await;
+                                let _ = bot.answer_callback_query(query_id).text(format!("Beralih ke: {}", target_session.title)).await;
                                 
-                                if let Err(e) = client_clone.send_command(RpcCommand::SwitchSession {
+                                if let Err(e) = client.send_command(RpcCommand::SwitchSession {
                                     id: None,
                                     session_path: target_session.file_path.clone(),
                                 }).await {
-                                    let _ = bot_clone.edit_message_text(chat_id, message_id, format!("❌ Gagal berpindah sesi: {:#}", e)).await;
+                                    let _ = bot.edit_message_text(chat_id, message_id, format!("❌ Gagal berpindah sesi: {:#}", e)).await;
                                 } else {
                                     let switched_msg = format!(
                                         "✅ <b>Berhasil Berpindah Sesi!</b>\n\n\
@@ -379,22 +377,22 @@ pub async fn callback_handler(
                                         <i>Kirim pesan untuk melanjutkan percakapan pada sesi ini.</i>",
                                         escape_html(&target_session.title),
                                         escape_html(&target_session.id_prefix),
-                                        escape_html(&config.project_workspace.to_string_lossy())
+                                        escape_html(&target_session.file_path)
                                     );
-                                    let _ = bot_clone.edit_message_text(chat_id, message_id, switched_msg)
+                                    let _ = bot.edit_message_text(chat_id, message_id, switched_msg)
                                         .parse_mode(ParseMode::Html)
                                         .await;
                                 }
                             } else {
-                                let _ = bot_clone.answer_callback_query(query_id).text("Sesi tidak ditemukan").await;
+                                let _ = bot.answer_callback_query(query_id).text("Sesi tidak ditemukan").await;
                             }
                         }
-                    });
+                    }
+                    _ => {}
                 }
-                _ => {}
             }
         }
-    }
+    });
 
     Ok(())
 }

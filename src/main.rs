@@ -16,9 +16,17 @@ use teloxide::types::ParseMode;
 use teloxide::utils::command::BotCommands;
 use types::{AppConfig, RpcCommand, RpcEvent};
 use utils::escape_html;
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    // 1. Inisialisasi Logger
+fn main() -> anyhow::Result<()> {
+    // Buat multi-threaded Tokio runtime dengan stack size 4 MB per thread (mencegah stack overflow di Windows)
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .thread_stack_size(4 * 1024 * 1024)
+        .build()?;
+
+    runtime.block_on(async_main())
+}
+
+async fn async_main() -> anyhow::Result<()> {
     if std::env::var("RUST_LOG").is_err() {
         std::env::set_var("RUST_LOG", "info");
     }
