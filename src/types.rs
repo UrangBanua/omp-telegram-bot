@@ -196,6 +196,8 @@ pub enum RpcEvent {
         error: Option<String>,
         data: Option<serde_json::Value>,
     },
+    #[serde(rename = "disconnected")]
+    Disconnected,
     #[serde(other)]
     Unknown,
 }
@@ -210,6 +212,7 @@ impl RpcEvent {
             RpcEvent::ToolExecutionStart { .. } => "tool_execution_start",
             RpcEvent::ToolExecutionEnd { .. } => "tool_execution_end",
             RpcEvent::Response { .. } => "response",
+            RpcEvent::Disconnected => "disconnected",
             RpcEvent::Unknown => "unknown",
         }
     }

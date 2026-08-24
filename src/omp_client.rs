@@ -177,9 +177,9 @@ async fn run_omp_supervisor(
                 }
             }
         }
-
         // Pastikan child process dimatikan sebelum respawn
         is_ready.store(false, Ordering::SeqCst);
+        let _ = event_tx.send(RpcEvent::Disconnected);
         let _ = child.kill().await;
         warn!("Subprocess OMP terhenti. Men-respawn dalam 2 detik...");
         tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;

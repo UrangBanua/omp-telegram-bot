@@ -316,9 +316,9 @@ pub fn markdown_to_telegram_html(input: &str) -> String {
             continue;
         }
 
-        // 3. Penanganan Separator Horizontal Line (--- / ***)
+        // 3. Penanganan Separator Horizontal Line (--- / ***) -> lewati dengan spasi bersih
         if trimmed == "---" || trimmed == "***" || trimmed == "___" {
-            output.push_str("────────────────────\n\n");
+            output.push('\n');
             i += 1;
             continue;
         }
