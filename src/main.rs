@@ -77,23 +77,20 @@ async fn main() -> anyhow::Result<()> {
                     if command.as_deref() == Some("get_state") && success {
                         if !has_notified_startup {
                             has_notified_startup = true;
-                            let session_title = data.as_ref()
+                            let session_title_disk = utils::get_active_session_title(&watcher_workspace);
+                            let session_title_state = data.as_ref()
                                 .and_then(|d| d.get("sessionName"))
                                 .and_then(|s| s.as_str())
-                                .filter(|s| !s.trim().is_empty())
-                                .or_else(|| {
-                                    data.as_ref()
-                                        .and_then(|d| d.get("sessionId"))
-                                        .and_then(|s| s.as_str())
-                                })
-                                .unwrap_or("Sesi Utama");
+                                .filter(|s| !s.trim().is_empty() && *s != "Sesi Utama");
+
+                            let final_session_title = session_title_state.unwrap_or(&session_title_disk);
 
                             // Notifikasi Startup Tepat 3 Baris
                             let startup_msg = format!(
                                 "🚀 <b>OMP Telegram Bot Aktif</b>\n\
                                 📄 <b>Nama Sesi:</b> <code>{}</code>\n\
                                 📁 <b>Workspace:</b> <code>{}</code>",
-                                escape_html(session_title),
+                                escape_html(final_session_title),
                                 escape_html(&watcher_workspace.to_string_lossy())
                             );
                             notify_admins(&watcher_bot, &watcher_users, &startup_msg).await;

@@ -19,8 +19,8 @@ use tokio::time::{interval, Duration};
 pub enum Command {
     #[command(description = "Menampilkan petunjuk penggunaan dan status koneksi bot")]
     Start,
-    #[command(description = "Memulai sesi percakapan koding baru (/new atau /new <instruksi>)")]
-    New(String),
+    #[command(description = "Membuat sesi koding baru (arsip sesi aktif)")]
+    New,
     #[command(description = "Menghentikan paksa aksi/pemikiran AI (Emergency Stop)")]
     Abort,
     #[command(description = "Menyisipkan koreksi/arahan di tengah proses agen")]
@@ -100,7 +100,7 @@ pub async fn command_handler(
                 .await?;
         }
 
-        Command::New(_prompt) => {
+        Command::New => {
             let keyboard = InlineKeyboardMarkup::new(vec![vec![
                 InlineKeyboardButton::callback("✅ Ya, Buat Sesi Baru", "confirm_new_session"),
                 InlineKeyboardButton::callback("❌ Batalkan", "cancel_new_session"),
@@ -263,38 +263,45 @@ pub async fn command_handler(
         }
 
         Command::Resume => {
-            let sessions = list_workspace_sessions(&config.project_workspace);
-            if sessions.is_empty() {
-                bot.send_message(chat_id, "📂 <i>Tidak ditemukan riwayat sesi tersimpan di workspace ini.</i>")
+            let workspace = config.project_workspace.clone();
+            let bot_clone = bot.clone();
+            tokio::spawn(async move {
+                let sessions = tokio::task::spawn_blocking(move || {
+                    list_workspace_sessions(&workspace)
+                }).await.unwrap_or_default();
+
+                if sessions.is_empty() {
+                    let _ = bot_clone.send_message(chat_id, "📂 <i>Tidak ditemukan riwayat sesi tersimpan di workspace ini.</i>")
+                        .parse_mode(ParseMode::Html)
+                        .await;
+                    return;
+                }
+
+                let mut text = String::from("📂 <b>Pilih Sesi untuk Dilanjutkan (Resume):</b>\n\n");
+                let mut keyboard_rows = Vec::new();
+
+                for (idx, item) in sessions.iter().enumerate() {
+                    text.push_str(&format!(
+                        "{}. <b>{}</b>\n   <code>{}</code> • <i>{}</i>\n\n",
+                        idx + 1,
+                        escape_html(&item.title),
+                        escape_html(&item.id_prefix),
+                        escape_html(&item.timestamp_str)
+                    ));
+
+                    let button_label = format!("{}. {}", idx + 1, item.title.chars().take(22).collect::<String>());
+                    keyboard_rows.push(vec![InlineKeyboardButton::callback(
+                        button_label,
+                        format!("resume_idx:{}", idx),
+                    )]);
+                }
+
+                let keyboard = InlineKeyboardMarkup::new(keyboard_rows);
+                let _ = bot_clone.send_message(chat_id, text)
+                    .reply_markup(keyboard)
                     .parse_mode(ParseMode::Html)
-                    .await?;
-                return Ok(());
-            }
-
-            let mut text = String::from("📂 <b>Pilih Sesi untuk Dilanjutkan (Resume):</b>\n\n");
-            let mut keyboard_rows = Vec::new();
-
-            for (idx, item) in sessions.iter().enumerate() {
-                text.push_str(&format!(
-                    "{}. <b>{}</b>\n   <code>{}</code> • <i>{}</i>\n\n",
-                    idx + 1,
-                    escape_html(&item.title),
-                    escape_html(&item.id_prefix),
-                    escape_html(&item.timestamp_str)
-                ));
-
-                let button_label = format!("{}. {}", idx + 1, item.title.chars().take(22).collect::<String>());
-                keyboard_rows.push(vec![InlineKeyboardButton::callback(
-                    button_label,
-                    format!("resume_idx:{}", idx),
-                )]);
-            }
-
-            let keyboard = InlineKeyboardMarkup::new(keyboard_rows);
-            bot.send_message(chat_id, text)
-                .reply_markup(keyboard)
-                .parse_mode(ParseMode::Html)
-                .await?;
+                    .await;
+            });
         }
     }
 
@@ -342,35 +349,47 @@ pub async fn callback_handler(
                     .await?;
                 }
                 other if other.starts_with("resume_idx:") => {
-                    let idx_str = &other["resume_idx:".len()..];
-                    if let Ok(idx) = idx_str.parse::<usize>() {
-                        let sessions = list_workspace_sessions(&config.project_workspace);
-                        if let Some(target_session) = sessions.get(idx) {
-                            bot.answer_callback_query(q.id.clone()).text(format!("Beralih ke sesi: {}", target_session.title)).await?;
-                            
-                            if let Err(e) = client.send_command(RpcCommand::SwitchSession {
-                                id: None,
-                                session_path: target_session.file_path.clone(),
-                            }).await {
-                                bot.edit_message_text(msg.chat().id, msg.id(), format!("❌ Gagal berpindah sesi: {:#}", e)).await?;
+                    let idx_str = other["resume_idx:".len()..].to_string();
+                    let workspace = config.project_workspace.clone();
+                    let bot_clone = bot.clone();
+                    let client_clone = client.clone();
+                    let chat_id = msg.chat().id;
+                    let message_id = msg.id();
+                    let query_id = q.id.clone();
+
+                    tokio::spawn(async move {
+                        if let Ok(idx) = idx_str.parse::<usize>() {
+                            let sessions = tokio::task::spawn_blocking(move || {
+                                list_workspace_sessions(&workspace)
+                            }).await.unwrap_or_default();
+
+                            if let Some(target_session) = sessions.get(idx) {
+                                let _ = bot_clone.answer_callback_query(query_id).text(format!("Beralih ke: {}", target_session.title)).await;
+                                
+                                if let Err(e) = client_clone.send_command(RpcCommand::SwitchSession {
+                                    id: None,
+                                    session_path: target_session.file_path.clone(),
+                                }).await {
+                                    let _ = bot_clone.edit_message_text(chat_id, message_id, format!("❌ Gagal berpindah sesi: {:#}", e)).await;
+                                } else {
+                                    let switched_msg = format!(
+                                        "✅ <b>Berhasil Berpindah Sesi!</b>\n\n\
+                                        📄 <b>Sesi Aktif:</b> <code>{}</code> (<code>{}</code>)\n\
+                                        📁 <b>Workspace:</b> <code>{}</code>\n\n\
+                                        <i>Kirim pesan untuk melanjutkan percakapan pada sesi ini.</i>",
+                                        escape_html(&target_session.title),
+                                        escape_html(&target_session.id_prefix),
+                                        escape_html(&config.project_workspace.to_string_lossy())
+                                    );
+                                    let _ = bot_clone.edit_message_text(chat_id, message_id, switched_msg)
+                                        .parse_mode(ParseMode::Html)
+                                        .await;
+                                }
                             } else {
-                                let switched_msg = format!(
-                                    "✅ <b>Berhasil Berpindah Sesi!</b>\n\n\
-                                    📄 <b>Sesi Aktif:</b> <code>{}</code> (<code>{}</code>)\n\
-                                    📁 <b>Workspace:</b> <code>{}</code>\n\n\
-                                    <i>Kirim pesan untuk melanjutkan percakapan pada sesi ini.</i>",
-                                    escape_html(&target_session.title),
-                                    escape_html(&target_session.id_prefix),
-                                    escape_html(&config.project_workspace.to_string_lossy())
-                                );
-                                bot.edit_message_text(msg.chat().id, msg.id(), switched_msg)
-                                    .parse_mode(ParseMode::Html)
-                                    .await?;
+                                let _ = bot_clone.answer_callback_query(query_id).text("Sesi tidak ditemukan").await;
                             }
-                        } else {
-                            bot.answer_callback_query(q.id.clone()).text("Sesi tidak ditemukan").await?;
                         }
-                    }
+                    });
                 }
                 _ => {}
             }

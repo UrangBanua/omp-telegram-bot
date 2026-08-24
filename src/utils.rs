@@ -679,40 +679,44 @@ pub fn list_workspace_sessions(workspace: &std::path::Path) -> Vec<SessionItem> 
     files.sort_by(|a, b| b.1.cmp(&a.1));
 
     // Ambil maksimal 6 sesi terbaru untuk Telegram keyboard
+    // Ambil maksimal 6 sesi terbaru untuk Telegram keyboard
     for (path, _) in files.into_iter().take(6) {
         let file_path_str = path.to_string_lossy().to_string();
         let mut title = String::new();
         let mut id_prefix = String::new();
         let mut timestamp_str = String::new();
 
-        if let Ok(content) = std::fs::read_to_string(&path) {
-            for line in content.lines().take(6) {
-                if let Ok(json) = serde_json::from_str::<serde_json::Value>(line) {
-                    if let Some(t) = json.get("title").and_then(|t| t.as_str()) {
-                        if !t.trim().is_empty() && title.is_empty() {
-                            title = t.trim().to_string();
-                         }
-                    }
-                    if let Some(id) = json.get("id").and_then(|i| i.as_str()) {
-                        if id_prefix.is_empty() && id.len() >= 8 {
-                            id_prefix = id[..8].to_string();
+        if let Ok(file) = std::fs::File::open(&path) {
+            let reader = std::io::BufReader::new(file);
+            for line_res in std::io::BufRead::lines(reader).take(8) {
+                if let Ok(line) = line_res {
+                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&line) {
+                        if let Some(t) = json.get("title").and_then(|t| t.as_str()) {
+                            if !t.trim().is_empty() && title.is_empty() {
+                                title = t.trim().to_string();
+                            }
                         }
-                    }
-                    if let Some(ts) = json.get("timestamp").and_then(|t| t.as_str()) {
-                        if timestamp_str.is_empty() && ts.len() >= 10 {
-                            timestamp_str = ts[..10].to_string();
+                        if let Some(id) = json.get("id").and_then(|i| i.as_str()) {
+                            if id_prefix.is_empty() && id.len() >= 8 {
+                                id_prefix = id[..8].to_string();
+                            }
                         }
-                    }
-                    if title.is_empty() {
-                        if let Some(msg_text) = json.get("message")
-                            .and_then(|m| m.get("content"))
-                            .and_then(|c| c.as_array())
-                            .and_then(|arr| arr.first())
-                            .and_then(|item| item.get("text"))
-                            .and_then(|t| t.as_str())
-                        {
-                            if !msg_text.trim().is_empty() {
-                                title = msg_text.chars().take(35).collect();
+                        if let Some(ts) = json.get("timestamp").and_then(|t| t.as_str()) {
+                            if timestamp_str.is_empty() && ts.len() >= 10 {
+                                timestamp_str = ts[..10].to_string();
+                            }
+                        }
+                        if title.is_empty() {
+                            if let Some(msg_text) = json.get("message")
+                                .and_then(|m| m.get("content"))
+                                .and_then(|c| c.as_array())
+                                .and_then(|arr| arr.first())
+                                .and_then(|item| item.get("text"))
+                                .and_then(|t| t.as_str())
+                            {
+                                if !msg_text.trim().is_empty() {
+                                    title = msg_text.chars().take(35).collect();
+                                }
                             }
                         }
                     }
@@ -736,6 +740,17 @@ pub fn list_workspace_sessions(workspace: &std::path::Path) -> Vec<SessionItem> 
     }
 
     results
+}
+
+/// Mengambil judul sesi aktif terbaru dari disk berdasarkan workspace.
+pub fn get_active_session_title(workspace: &std::path::Path) -> String {
+    let sessions = list_workspace_sessions(workspace);
+    if let Some(first) = sessions.first() {
+        if !first.title.trim().is_empty() && first.title != "Sesi Koding" {
+            return first.title.clone();
+        }
+    }
+    "Sesi Utama".to_string()
 }
 
 #[cfg(test)]
