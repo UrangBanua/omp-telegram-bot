@@ -130,6 +130,22 @@ pub enum RpcCommand {
     },
 }
 
+impl RpcCommand {
+    pub fn type_name(&self) -> &'static str {
+        match self {
+            RpcCommand::Prompt { .. } => "prompt",
+            RpcCommand::Steer { .. } => "steer",
+            RpcCommand::Abort { .. } => "abort",
+            RpcCommand::FollowUp { .. } => "follow_up",
+            RpcCommand::NewSession { .. } => "new_session",
+            RpcCommand::SetModel { .. } => "set_model",
+            RpcCommand::SetThinkingLevel { .. } => "set_thinking_level",
+            RpcCommand::Compact { .. } => "compact",
+            RpcCommand::GetState { .. } => "get_state",
+        }
+    }
+}
+
 /// Struktur detail event pembaruan asisten (token/text delta).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AssistantMessageEvent {
@@ -180,7 +196,21 @@ pub enum RpcEvent {
         error: Option<String>,
         data: Option<serde_json::Value>,
     },
-
     #[serde(other)]
     Unknown,
+}
+
+impl RpcEvent {
+    pub fn type_name(&self) -> &'static str {
+        match self {
+            RpcEvent::Ready { .. } => "ready",
+            RpcEvent::AgentStart => "agent_start",
+            RpcEvent::AgentEnd => "agent_end",
+            RpcEvent::MessageUpdate { .. } => "message_update",
+            RpcEvent::ToolExecutionStart { .. } => "tool_execution_start",
+            RpcEvent::ToolExecutionEnd { .. } => "tool_execution_end",
+            RpcEvent::Response { .. } => "response",
+            RpcEvent::Unknown => "unknown",
+        }
+    }
 }

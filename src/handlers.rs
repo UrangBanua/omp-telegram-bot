@@ -4,7 +4,7 @@ use crate::omp_client::OmpClient;
 use crate::types::{AppConfig, ImageContent, RpcCommand, RpcEvent};
 use crate::utils::{chunk_message, escape_html, format_tool_status, markdown_to_telegram_html};
 use base64::Engine;
-use log::{error, warn};
+use log::{debug, error, warn};
 use std::sync::Arc;
 use teloxide::net::Download;
 use teloxide::prelude::*;
@@ -54,8 +54,11 @@ pub async fn command_handler(
     client: OmpClient,
     config: Arc<AppConfig>,
 ) -> ResponseResult<()> {
+    let user_id = msg.from.as_ref().map(|u| u.id.0).unwrap_or(0);
+    debug!("Menerima command dari user_id: {}", user_id);
+
     if !is_authorized(&msg, &config) {
-        warn!("Akses command ditolak untuk user ID tidak terdaftar.");
+        warn!("Akses command ditolak untuk user ID: {}", user_id);
         bot.send_message(
             msg.chat.id,
             "⛔ <b>Akses Ditolak</b>\nID akun Anda tidak terdaftar dalam whitelist bot.",
@@ -65,8 +68,8 @@ pub async fn command_handler(
         return Ok(());
     }
 
+    debug!("Mengeksekusi command: {:?}", cmd);
     let chat_id = msg.chat.id;
-
     match cmd {
         Command::Start => {
             let ready_status = if client.is_ready() {
@@ -345,8 +348,11 @@ pub async fn message_handler(
     client: OmpClient,
     config: Arc<AppConfig>,
 ) -> ResponseResult<()> {
+    let user_id = msg.from.as_ref().map(|u| u.id.0).unwrap_or(0);
+    debug!("Menerima pesan non-command dari user_id: {}", user_id);
+
     if !is_authorized(&msg, &config) {
-        warn!("Akses pesan ditolak untuk user ID tidak terdaftar.");
+        warn!("Akses pesan ditolak untuk user ID: {}", user_id);
         bot.send_message(
             msg.chat.id,
             "⛔ <b>Akses Ditolak</b>\nID akun Anda tidak terdaftar dalam whitelist bot.",
@@ -357,8 +363,6 @@ pub async fn message_handler(
     }
 
     let chat_id = msg.chat.id;
-
-    // 1. Cek jika pesan adalah Foto / Screenshot (Multimodal)
     if msg.photo().is_some() {
         let best_photo = match msg.photo().and_then(|photos| photos.last()) {
             Some(p) => p.clone(),
@@ -409,6 +413,7 @@ async fn execute_prompt_and_stream(
     images: Option<Vec<ImageContent>>,
     client: OmpClient,
 ) -> ResponseResult<()> {
+    debug!("Memulai execute_prompt_and_stream untuk chat_id: {}", chat_id);
     let mut event_rx = client.subscribe();
 
     // Kirim prompt ke OMP RPC
@@ -424,6 +429,7 @@ async fn execute_prompt_and_stream(
     // Kirim balon pesan awal untuk di-update selama streaming
     let sent_msg = bot.send_message(chat_id, "▌").await?;
     let message_id = sent_msg.id;
+    debug!("Balon pesan awal dibuat dengan message_id: {}", message_id);
 
     // Jalankan background typing indicator loop
     let typing_bot = bot.clone();
@@ -461,17 +467,19 @@ async fn execute_prompt_and_stream(
 
             event_res = event_rx.recv() => {
                 match event_res {
-                    Ok(event) => match event {
-                        RpcEvent::MessageUpdate { assistant_message_event } => {
-                            if let Some(ev) = assistant_message_event {
-                                if ev.event_type == "text_delta" {
-                                    if let Some(delta) = ev.delta {
-                                        accumulated_text.push_str(&delta);
+                    Ok(event) => {
+                        debug!("Event OMP diterima di stream listener: '{}'", event.type_name());
+                        match event {
+                            RpcEvent::MessageUpdate { assistant_message_event } => {
+                                if let Some(ev) = assistant_message_event {
+                                    if ev.event_type == "text_delta" {
+                                        if let Some(delta) = ev.delta {
+                                            debug!("Menerima text_delta (panjang: {} chars)", delta.len());
+                                            accumulated_text.push_str(&delta);
+                                        }
                                     }
                                 }
                             }
-                        }
-
                         RpcEvent::ToolExecutionStart { tool_name, intent } => {
                             if let Some(tn) = tool_name {
                                 current_tool_status = format_tool_status(&tn, intent.as_deref());
@@ -502,10 +510,10 @@ async fn execute_prompt_and_stream(
                             }
                         }
 
-                        RpcEvent::AgentEnd => {
-                            is_turn_active = false;
-                        }
-
+                            RpcEvent::AgentEnd => {
+                                debug!("Siklus agent_end tercapai. Menghentikan stream listener.");
+                                is_turn_active = false;
+                            }
                         _ => {}
                     },
                     Err(broadcast::error::RecvError::Lagged(n)) => {
@@ -571,11 +579,11 @@ async fn update_message_safe(bot: &Bot, chat_id: ChatId, message_id: MessageId, 
         return;
     }
 
+    debug!("Mencoba update pesan Telegram message_id: {} (panjang teks: {} chars)", message_id, html_text.len());
     // Coba edit dengan format HTML terlebih dahulu
     let res = bot.edit_message_text(chat_id, message_id, html_text)
         .parse_mode(ParseMode::Html)
         .await;
-
     if let Err(e) = res {
         let err_str = e.to_string();
         if !err_str.contains("message is not modified") {

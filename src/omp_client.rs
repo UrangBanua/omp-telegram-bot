@@ -2,7 +2,7 @@
 
 use crate::types::{AppConfig, RpcCommand, RpcEvent};
 use anyhow::{Context, Result};
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -41,6 +41,7 @@ impl OmpClient {
 
     /// Mengirimkan perintah JSON-RPC ke OMP Core Engine.
     pub async fn send_command(&self, cmd: RpcCommand) -> Result<()> {
+        debug!("Memasukkan RpcCommand '{}' ke antrean pengirim mpsc...", cmd.type_name());
         self.command_tx
             .send(cmd)
             .await
@@ -121,9 +122,9 @@ async fn run_omp_supervisor(
                             if trimmed.is_empty() {
                                 continue;
                             }
-
                             match serde_json::from_str::<RpcEvent>(trimmed) {
                                 Ok(event) => {
+                                    debug!("Event OMP diterima dari stdout: '{}'", event.type_name());
                                     if let RpcEvent::Ready { .. } = &event {
                                         info!("Handshake OMP RPC Ready diterima!");
                                         is_ready_clone.store(true, Ordering::SeqCst);
@@ -151,6 +152,7 @@ async fn run_omp_supervisor(
                 cmd = command_rx.recv() => {
                     match cmd {
                         Some(command) => {
+                            debug!("Meneruskan RpcCommand '{}' ke stdin OMP...", command.type_name());
                             match serde_json::to_string(&command) {
                                 Ok(mut json_str) => {
                                     json_str.push('\n');
@@ -159,6 +161,7 @@ async fn run_omp_supervisor(
                                         process_active = false;
                                     }
                                     let _ = stdin_writer.flush().await;
+                                    debug!("Berhasil flush RpcCommand ke stdin OMP.");
                                 }
                                 Err(e) => {
                                     error!("Gagal men-serialize RpcCommand ke JSON: {:#}", e);
@@ -185,14 +188,8 @@ async fn run_omp_supervisor(
 
 /// Men-spawn subprocess OMP CLI dengan mode RPC persisten.
 fn spawn_omp_process(config: &AppConfig) -> Result<Child> {
+    debug!("Menjalankan spawn process: '{} --mode rpc' di direktori {:?}", config.omp_bin_path, config.project_workspace);
     let mut cmd = Command::new(&config.omp_bin_path);
-    cmd.arg("--mode")
-        .arg("rpc")
-        .current_dir(&config.project_workspace)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit()); // Log stderr diteruskan ke terminal bot
-
     let child = cmd
         .spawn()
         .with_context(|| format!("Gagal menjalankan binary: '{}'", config.omp_bin_path))?;

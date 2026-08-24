@@ -6,7 +6,7 @@ mod types;
 mod utils;
 
 use handlers::{command_handler, message_handler, Command};
-use log::{error, info};
+use log::{debug, error, info, warn};
 use omp_client::OmpClient;
 use std::sync::Arc;
 use teloxide::dispatching::{Dispatcher, UpdateFilterExt};
@@ -24,7 +24,9 @@ async fn main() -> anyhow::Result<()> {
 
     // 2. Muat variabel lingkungan dari .env
     if let Err(e) = dotenvy::dotenv() {
-        log::warn!("File .env tidak ditemukan atau gagal dimuat: {}. Menggunakan environment sistem.", e);
+        warn!("File .env tidak ditemukan atau gagal dimuat: {}. Menggunakan environment sistem.", e);
+    } else {
+        debug!("File .env berhasil dibaca.");
     }
 
     let config = match AppConfig::load_from_env() {
@@ -40,12 +42,13 @@ async fn main() -> anyhow::Result<()> {
     info!("Whitelist User ID: {:?}", config.allowed_user_ids);
 
     // 3. Inisialisasi OMP RPC Client
+    debug!("Menginisialisasi OmpClient...");
     let client = OmpClient::start(config.clone());
     let shared_config = Arc::new(config.clone());
 
     // 4. Inisialisasi Bot Telegram
+    debug!("Menginisialisasi Teloxide Bot instance...");
     let bot = Bot::new(&config.teloxide_token);
-
     // 5. Daftarkan menu perintah autocomplete ke Telegram API
     info!("Mendaftarkan menu autocomplete perintah ke Telegram...");
     if let Err(e) = bot.set_my_commands(Command::bot_commands()).await {
@@ -55,6 +58,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // 6. Buat Handler Dispatcher Teloxide dengan dptree branching
+    debug!("Menyusun pohon handler (dptree)...");
     let handler = dptree::entry()
         .branch(
             Update::filter_message()
@@ -65,7 +69,6 @@ async fn main() -> anyhow::Result<()> {
             Update::filter_message()
                 .endpoint(message_handler),
         );
-
     info!("OMP Telegram Bot Bridge siap berjalan! Menunggu pesan masuk...");
 
     // 7. Jalankan Dispatcher dengan penanganan graceful shutdown bawaan Teloxide
