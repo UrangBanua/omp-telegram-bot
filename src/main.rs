@@ -5,7 +5,7 @@ mod omp_client;
 mod types;
 mod utils;
 
-use handlers::{command_handler, message_handler, Command};
+use handlers::{callback_handler, command_handler, message_handler, Command};
 use log::{debug, error, info, warn};
 use omp_client::OmpClient;
 use std::collections::HashSet;
@@ -14,7 +14,7 @@ use teloxide::dispatching::{Dispatcher, UpdateFilterExt};
 use teloxide::prelude::*;
 use teloxide::types::ParseMode;
 use teloxide::utils::command::BotCommands;
-use types::{AppConfig, RpcEvent};
+use types::{AppConfig, RpcCommand, RpcEvent};
 use utils::escape_html;
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -58,28 +58,50 @@ async fn main() -> anyhow::Result<()> {
     } else {
         info!("Menu perintah berhasil didaftarkan di Telegram.");
     }
-
-    // 6. Notifikasi Startup ke Telegram Admin
-    let startup_msg = format!(
-        "🚀 <b>OMP Telegram Bridge Aktif</b>\n\
-        📁 <b>Workspace:</b> <code>{}</code>\n\
-        ⏳ <i>Menghubungkan ke OMP Core Engine...</i>",
-        escape_html(&config.project_workspace.to_string_lossy())
-    );
-    notify_admins(&bot, &config.allowed_user_ids, &startup_msg).await;
-
-    // 7. Background Event Watcher untuk memantau status OMP Engine (Up/Down)
+    // 6. Background Event Watcher untuk memantau status OMP Engine (Up/Down) & Notifikasi Startup 3 Baris
     let watcher_bot = bot.clone();
     let watcher_users = config.allowed_user_ids.clone();
+    let watcher_workspace = config.project_workspace.clone();
+    let watcher_client = client.clone();
     let mut event_rx = client.subscribe();
+
     tokio::spawn(async move {
+        let mut has_notified_startup = false;
         while let Ok(event) = event_rx.recv().await {
             match event {
                 RpcEvent::Ready { .. } => {
-                    let msg = "🟢 <b>OMP Core Engine Terhubung (Ready)</b>\n<i>Siap menerima instruksi dan prompt koding!</i>";
-                    notify_admins(&watcher_bot, &watcher_users, msg).await;
+                    debug!("Menerima Ready event di watcher, meminta GetState...");
+                    let _ = watcher_client.send_command(RpcCommand::GetState { id: None }).await;
+                }
+                RpcEvent::Response { command, success, data, .. } => {
+                    if command.as_deref() == Some("get_state") && success {
+                        if !has_notified_startup {
+                            has_notified_startup = true;
+                            let session_title = data.as_ref()
+                                .and_then(|d| d.get("sessionName"))
+                                .and_then(|s| s.as_str())
+                                .filter(|s| !s.trim().is_empty())
+                                .or_else(|| {
+                                    data.as_ref()
+                                        .and_then(|d| d.get("sessionId"))
+                                        .and_then(|s| s.as_str())
+                                })
+                                .unwrap_or("Sesi Utama");
+
+                            // Notifikasi Startup Tepat 3 Baris
+                            let startup_msg = format!(
+                                "🚀 <b>OMP Telegram Bot Aktif</b>\n\
+                                📄 <b>Nama Sesi:</b> <code>{}</code>\n\
+                                📁 <b>Workspace:</b> <code>{}</code>",
+                                escape_html(session_title),
+                                escape_html(&watcher_workspace.to_string_lossy())
+                            );
+                            notify_admins(&watcher_bot, &watcher_users, &startup_msg).await;
+                        }
+                    }
                 }
                 RpcEvent::Disconnected => {
+                    has_notified_startup = false; // Reset agar saat reconnect bisa re-notify jika perlu
                     let msg = "⚠️ <b>OMP Core Engine Terputus!</b>\n<i>Mencoba auto-respawn di background...</i>";
                     notify_admins(&watcher_bot, &watcher_users, msg).await;
                 }
@@ -88,7 +110,7 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    // 8. Buat Handler Dispatcher Teloxide dengan dptree branching
+    // 7. Buat Handler Dispatcher Teloxide dengan dptree branching
     debug!("Menyusun pohon handler (dptree)...");
     let handler = dptree::entry()
         .branch(
@@ -99,11 +121,15 @@ async fn main() -> anyhow::Result<()> {
         .branch(
             Update::filter_message()
                 .endpoint(message_handler),
+        )
+        .branch(
+            Update::filter_callback_query()
+                .endpoint(callback_handler),
         );
 
     info!("OMP Telegram Bot Bridge siap berjalan! Menunggu pesan masuk...");
 
-    // 9. Jalankan Dispatcher dengan penanganan graceful shutdown bawaan Teloxide
+    // 8. Jalankan Dispatcher dengan penanganan graceful shutdown bawaan Teloxide
     Dispatcher::builder(bot.clone(), handler)
         .dependencies(dptree::deps![client, shared_config])
         .enable_ctrlc_handler()

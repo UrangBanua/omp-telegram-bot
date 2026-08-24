@@ -8,7 +8,7 @@ use log::{debug, error, warn};
 use std::sync::Arc;
 use teloxide::net::Download;
 use teloxide::prelude::*;
-use teloxide::types::{ChatAction, MessageId, ParseMode};
+use teloxide::types::{ChatAction, InlineKeyboardButton, InlineKeyboardMarkup, MessageId, ParseMode};
 use teloxide::utils::command::BotCommands;
 use tokio::sync::broadcast;
 use tokio::time::{interval, Duration};
@@ -98,24 +98,21 @@ pub async fn command_handler(
                 .await?;
         }
 
-        Command::New(prompt) => {
-            if let Err(e) = client.send_command(RpcCommand::NewSession { id: None, parent_session: None }).await {
-                bot.send_message(chat_id, format!("❌ Gagal memulai sesi baru: {:#}", e)).await?;
-                return Ok(());
-            }
+        Command::New(_prompt) => {
+            let keyboard = InlineKeyboardMarkup::new(vec![vec![
+                InlineKeyboardButton::callback("✅ Ya, Buat Sesi Baru", "confirm_new_session"),
+                InlineKeyboardButton::callback("❌ Batalkan", "cancel_new_session"),
+            ]]);
 
-            if prompt.trim().is_empty() {
-                bot.send_message(chat_id, "✨ <b>Sesi koding baru telah dimulai!</b>\nRiwayat lama telah diarsipkan.")
-                    .parse_mode(ParseMode::Html)
-                    .await?;
-            } else {
-                bot.send_message(chat_id, "✨ <b>Sesi baru dimulai dengan instruksi...</b>")
-                    .parse_mode(ParseMode::Html)
-                    .await?;
-                tokio::spawn(async move {
-                    let _ = execute_prompt_and_stream(bot, chat_id, prompt, None, client).await;
-                });
-            }
+            bot.send_message(
+                chat_id,
+                "⚠️ <b>Konfirmasi Pembuatan Sesi Baru</b>\n\n\
+                Apakah Anda yakin ingin memulai sesi koding baru?\n\
+                <i>Sesi aktif saat ini akan diarsipkan secara aman ke riwayat disk.</i>",
+            )
+            .reply_markup(keyboard)
+            .parse_mode(ParseMode::Html)
+            .await?;
         }
 
         Command::Abort => {
@@ -261,6 +258,54 @@ pub async fn command_handler(
                     .parse_mode(ParseMode::Html)
                     .await;
             });
+        }
+    }
+
+    Ok(())
+}
+
+/// Handler untuk memproses tombol interaktif konfirmasi (Inline Keyboard Callback).
+pub async fn callback_handler(
+    bot: Bot,
+    q: CallbackQuery,
+    client: OmpClient,
+    config: Arc<AppConfig>,
+) -> ResponseResult<()> {
+    let user_id = q.from.id.0;
+    if !config.allowed_user_ids.is_empty() && !config.allowed_user_ids.contains(&user_id) {
+        bot.answer_callback_query(q.id).text("⛔ Akses ditolak").await?;
+        return Ok(());
+    }
+
+    if let Some(data) = q.data {
+        if let Some(msg) = q.message {
+            match data.as_str() {
+                "confirm_new_session" => {
+                    bot.answer_callback_query(q.id).text("Membuat sesi baru...").await?;
+                    if let Err(e) = client.send_command(RpcCommand::NewSession { id: None, parent_session: None }).await {
+                        bot.edit_message_text(msg.chat().id, msg.id(), format!("❌ Gagal memulai sesi baru: {:#}", e)).await?;
+                    } else {
+                        bot.edit_message_text(
+                            msg.chat().id,
+                            msg.id(),
+                            "✨ <b>Sesi koding baru telah dimulai!</b>\nSesi lama telah diarsipkan dan OMP siap dengan sesi bersih.",
+                        )
+                        .parse_mode(ParseMode::Html)
+                        .await?;
+                    }
+                }
+                "cancel_new_session" => {
+                    bot.answer_callback_query(q.id).text("Dibatalkan").await?;
+                    bot.edit_message_text(
+                        msg.chat().id,
+                        msg.id(),
+                        "❌ <b>Pembuatan sesi baru dibatalkan.</b>\nSesi aktif saat ini tetap dilanjutkan.",
+                    )
+                    .parse_mode(ParseMode::Html)
+                    .await?;
+                }
+                _ => {}
+            }
         }
     }
 

@@ -188,15 +188,15 @@ async fn run_omp_supervisor(
 
 /// Men-spawn subprocess OMP CLI dengan mode RPC persisten.
 fn spawn_omp_process(config: &AppConfig) -> Result<Child> {
-    debug!("Menjalankan spawn process: '{} --mode rpc' di direktori {:?}", config.omp_bin_path, config.project_workspace);
+    debug!("Menjalankan spawn process: '{} --mode rpc -c' di direktori {:?}", config.omp_bin_path, config.project_workspace);
     let mut cmd = Command::new(&config.omp_bin_path);
     cmd.arg("--mode")
         .arg("rpc")
+        .arg("-c")
         .current_dir(&config.project_workspace)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit());
-
     let child = cmd
         .spawn()
         .with_context(|| format!("Gagal menjalankan binary: '{}'", config.omp_bin_path))?;
