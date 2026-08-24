@@ -507,17 +507,21 @@ fn format_state_card(data: &serde_json::Value, workspace: &std::path::Path) -> S
         .and_then(|u| u.get("tokens"))
         .and_then(|t| t.as_u64());
 
-    let max_tokens = data.get("contextUsage")
-        .and_then(|u| u.get("maxTokens"))
+    let max_context = data.get("contextUsage")
+        .and_then(|u| u.get("contextWindow").or_else(|| u.get("maxTokens")))
         .and_then(|m| m.as_u64());
 
-    let token_display = match (context_tokens, max_tokens) {
+    let percent_val = data.get("contextUsage")
+        .and_then(|u| u.get("percent"))
+        .and_then(|p| p.as_f64());
+
+    let context_str = match (context_tokens, max_context) {
         (Some(tok), Some(max)) => {
-            let pct = if max > 0 { (tok as f64 / max as f64) * 100.0 } else { 0.0 };
-            format!("{} / {} tokens ({:.2}%)", tok, max, pct)
+            let pct = percent_val.unwrap_or_else(|| if max > 0 { (tok as f64 / max as f64) * 100.0 } else { 0.0 });
+            format!("<code>{} / {} token</code> <b>({:.2}%)</b>", format_num_commas(tok), format_num_commas(max), pct)
         }
-        (Some(tok), None) => format!("{} tokens", tok),
-        _ => "-".to_string(),
+        (Some(tok), None) => format!("<code>{} token</code>", format_num_commas(tok)),
+        _ => "<code>-</code>".to_string(),
     };
 
     let status_str = if is_streaming {
@@ -534,7 +538,7 @@ fn format_state_card(data: &serde_json::Value, workspace: &std::path::Path) -> S
         • <b>Model Aktif:</b> <code>{}/{}</code>\n\
         • <b>Thinking Level:</b> <code>{}</code>\n\
         • <b>Sesi Aktif:</b> <code>{}</code> ({} pesan)\n\
-        • <b>Konsumsi Token:</b> {}\n\
+        • <b>Kapasitas Context:</b> {}\n\
         • <b>Workspace:</b> <code>{}</code>",
         status_str,
         escape_html(provider),
@@ -542,9 +546,24 @@ fn format_state_card(data: &serde_json::Value, workspace: &std::path::Path) -> S
         escape_html(thinking),
         escape_html(session_name),
         message_count,
-        token_display,
+        context_str,
         escape_html(&workspace.to_string_lossy())
     )
+}
+
+/// Format angka dengan pemisah ribuan koma untuk keterbacaan (contoh: 1,000,000).
+fn format_num_commas(n: u64) -> String {
+    let s = n.to_string();
+    let mut result = String::new();
+    let chars: Vec<char> = s.chars().collect();
+    let len = chars.len();
+    for (i, &c) in chars.iter().enumerate() {
+        if i > 0 && (len - i) % 3 == 0 {
+            result.push(',');
+        }
+        result.push(c);
+    }
+    result
 }
 
 pub async fn message_handler(
