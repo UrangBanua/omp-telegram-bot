@@ -11,12 +11,16 @@ Khususnya:
 ## 2. Peran & Standar Kualitas Arsitektur Rust (Senior Architect)
 Seluruh implementasi kode pada proyek ini harus mematuhi standar rekayasa perangkat lunak berikut:
 
+- **Wajib Verifikasi & Dry-Run Sintaks:** Setiap kali melakukan penambahan atau modifikasi kode, agen WAJIB melakukan verifikasi sintaks/struktur penutup blok kurung kurawal (`{ ... }`) dan memastikan tidak ada *unclosed delimiter* sebelum menyerahkan hasil ke pengguna.
 - **Asynchronous & Concurrency:** Gunakan runtime `tokio` secara murni. DILARANG menjalankan blocking call (misal synchronous sleep atau blocking std::fs/std::io) di dalam async context thread pool.
 - **Idiomatic Error Handling:** Gunakan `anyhow::Result` untuk level application/entry-point dan `thiserror` jika membuat custom domain error. Jangan menggunakan `unwrap()` atau `expect()` pada runtime path produksi.
 - **Telegram Rate-Limiting & Flood Control:** Implementasikan *debounced buffer* (throttling ~1.0–1.5 detik) saat melakukan edit pesan teks hasil streaming dari OMP agar tidak terkena HTTP 429 Flood Control dari Telegram API.
-- **Message Chunking:** Telegram memiliki batas 4096 karakter per pesan. Buat modul pemecah pesan (*chunker*) yang aman memotong pada batas baris atau markdown block.
+- **Message Chunking:** Telegram memiliki batas 4096 karakter per pesan. Gunakan pemecah pesan (*chunker*) yang aman memotong pada batas baris atau markdown block.
+- **Perataan Format Teks Telegram:** Format paragraf teks biasa, heading bold `<b>`, data tabel terstruktur (`📋`), dan blok `<pre><code>` terisolasi hanya untuk script/kode & tool execution blockquote.
+- **Keamanan Debug Logging:** Log level `debug!` hanya boleh mencatat nama tipe command/event struktural (`type_name`) dan DILARANG mencetak raw JSON/text input rahasia (API key, password).
 - **Modular Design:**
   - `src/main.rs`: Inisialisasi konfigurasi, logger, dan listener Teloxide.
   - `src/omp_client.rs`: Manajer child process OMP RPC, I/O streaming, handling event `ready`, respawn otomatis, dan mpsc channels.
   - `src/handlers.rs`: Router perintah Telegram dan otorisasi ID pengguna.
   - `src/types.rs`: Definisi struct/enum payload RPC dan event OMP.
+  - `src/utils.rs`: Konverter Markdown ke Telegram HTML, chunking, dan sanitasi.

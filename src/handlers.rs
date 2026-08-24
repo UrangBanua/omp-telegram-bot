@@ -480,42 +480,40 @@ async fn execute_prompt_and_stream(
                                     }
                                 }
                             }
-                        RpcEvent::ToolExecutionStart { tool_name, intent } => {
-                            if let Some(tn) = tool_name {
-                                current_tool_status = format_tool_status(&tn, intent.as_deref());
+                            RpcEvent::ToolExecutionStart { tool_name, intent } => {
+                                if let Some(tn) = tool_name {
+                                    current_tool_status = format_tool_status(&tn, intent.as_deref());
+                                }
                             }
-                        }
-
-                        RpcEvent::ToolExecutionEnd { .. } => {
-                            current_tool_status.clear();
-                        }
-
-                        RpcEvent::Response { command, success, data, error, .. } => {
-                            if let Some(cmd) = command {
-                                if cmd == "get_state" && success {
-                                    if let Some(d) = data {
-                                        let pretty_json = serde_json::to_string_pretty(&d).unwrap_or_default();
-                                        let chunks = chunk_message(&pretty_json, 3800);
-                                        for chunk in chunks {
-                                            let msg = format!("<pre><code class=\"language-json\">{}</code></pre>", escape_html(&chunk));
-                                            let _ = bot.send_message(chat_id, msg).parse_mode(ParseMode::Html).await;
+                            RpcEvent::ToolExecutionEnd { .. } => {
+                                current_tool_status.clear();
+                            }
+                            RpcEvent::Response { command, success, data, error, .. } => {
+                                if let Some(cmd) = command {
+                                    if cmd == "get_state" && success {
+                                        if let Some(d) = data {
+                                            let pretty_json = serde_json::to_string_pretty(&d).unwrap_or_default();
+                                            let chunks = chunk_message(&pretty_json, 3800);
+                                            for chunk in chunks {
+                                                let msg = format!("<pre><code class=\"language-json\">{}</code></pre>", escape_html(&chunk));
+                                                let _ = bot.send_message(chat_id, msg).parse_mode(ParseMode::Html).await;
+                                            }
                                         }
                                     }
                                 }
-                            }
-                            if !success {
-                                if let Some(err) = error {
-                                    accumulated_text.push_str(&format!("\n\n⚠️ <i>Error: {}</i>", escape_html(&err)));
+                                if !success {
+                                    if let Some(err) = error {
+                                        accumulated_text.push_str(&format!("\n\n⚠️ <i>Error: {}</i>", escape_html(&err)));
+                                    }
                                 }
                             }
-                        }
-
                             RpcEvent::AgentEnd => {
                                 debug!("Siklus agent_end tercapai. Menghentikan stream listener.");
                                 is_turn_active = false;
                             }
-                        _ => {}
-                    },
+                            _ => {}
+                        }
+                    }
                     Err(broadcast::error::RecvError::Lagged(n)) => {
                         warn!("Event subscriber lagged by {} messages", n);
                     }
